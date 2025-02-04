@@ -1,16 +1,16 @@
 Package: bigMICE
 Type: Package
-Title: What the Package Does (Title Case)
+Title: Big Data implementation for Multiple Imputation by Chained Equations
 Version: 0.1.0
 Authors@R: c(
     person(
-      "Jane", "Doe",
-      email = "jane@example.com",
+      "Hugo", "Morvan",
+      email = "hugmo418@student.liu.se",
       role = c("aut", "cre")
     )
   )
 Description: More about what it does (maybe more than one line).
     Continuation lines should be indented.
-License: What license is it under?
+License: GPL-3
 Encoding: UTF-8
 LazyData: true
