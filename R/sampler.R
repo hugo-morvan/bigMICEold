@@ -1,7 +1,7 @@
 
 # The sampler controls the actual Gibbs sampling iteration scheme.
 # This function is called by mice and mice.mids
-sampler <- function(data, m, ignore, where, imp, blocks, method,
+spark.sampler <- function(data, m, ignore, where, imp, blocks, method,
                     visitSequence, predictorMatrix, formulas,
                     modeltype, blots,
                     post, fromto, printFlag, ...) {
@@ -184,7 +184,7 @@ sampler <- function(data, m, ignore, where, imp, blocks, method,
 }
 
 
-sampler.univ <- function(data, r, where, pred, formula, method, yname, k,
+spark.sampler.univ <- function(data, r, where, pred, formula, method, yname, k,
                          ct = "pred", user, ignore, ...) {
   j <- yname[1L]
 

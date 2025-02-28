@@ -65,7 +65,7 @@ check.spark.dataform <- function(data) {
     )
   }
   # Checks for nested matrix/data.frame
-
+  
   for (col in cols) {
     if (grepl("array|struct", col$type, ignore.case = TRUE)) {
       # print("**DEBUG** in check_spark_dataframe, col$type: ") # DEBUG STATEMENT, remove later
@@ -136,4 +136,3 @@ check.newdata <- function(newdata, data) {
   }
   newdata
 }
-

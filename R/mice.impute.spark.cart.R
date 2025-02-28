@@ -5,23 +5,23 @@ mice.impute.spark.cart <- function(y, ry, x, wy = NULL, minbucket = 5, cp = 1e-0
   #TODO: - convert R dataframe to spark dataframe (createDataFrame)?
   #      or, automatically infer to use spark or not based on type of x and y (spark df or not)
   #     - check the fields of the predict object of the spark decision tree
-  #     - pass in the spark session object ? 
-  install.on.demand("rpart")
-  install.on.demand("sparklyr")
-  
-  if (is.null(wy)) {
-    wy <- !ry
-  }
-  minbucket <- max(1, minbucket)
-  if (dim(x)[2] == 0) {
-    x <- cbind(x, 1)
-    dimnames(x) <- list(NULL, "int")
-  }
-  
-  xobs <- data.frame(x[ry, , drop = FALSE]) # xobs is the observed data
-  xmis <- data.frame(x[wy, , drop = FALSE]) # xmis is the missing data
-  yobs <- y[ry] 
-  
+  # #     - pass in the spark session object ?
+  # install.on.demand("rpart")
+  # install.on.demand("sparklyr")
+  #
+  # if (is.null(wy)) {
+  #   wy <- !ry
+  # }
+  # minbucket <- max(1, minbucket)
+  # if (dim(x)[2] == 0) {
+  #   x <- cbind(x, 1)
+  #   dimnames(x) <- list(NULL, "int")
+  # }
+  #
+  # xobs <- data.frame(x[ry, , drop = FALSE]) # xobs is the observed data
+  # xmis <- data.frame(x[wy, , drop = FALSE]) # xmis is the missing data
+  # yobs <- y[ry]
+
   # if (!is.factor(yobs)) { # regression
   #   fit <- rpart::rpart(yobs ~ .,
   #                       data = cbind(yobs, xobs), method = "anova",
@@ -38,7 +38,7 @@ mice.impute.spark.cart <- function(y, ry, x, wy = NULL, minbucket = 5, cp = 1e-0
   #   if (any(cat.has.all.obs)) {
   #     return(rep(levels(yobs)[cat.has.all.obs], sum(wy)))
   #   }
-  #   
+  #
   #   xy <- cbind(yobs, xobs)
   #   xy <- droplevels(xy)
   #   # FIXME: rpart fails to runs on empty categories in yobs,
@@ -60,33 +60,37 @@ mice.impute.spark.cart <- function(y, ry, x, wy = NULL, minbucket = 5, cp = 1e-0
   #                   }
   #   )
   # }
-  
+
   # %%%%%%%%%  Sparklyr adaptation: %%%%%%%%%
-  if (!is.factor(yobs)) { 
+  if (!is.factor(yobs)) { # Spark dataframe will never contain factor. need to change the boolean
     # --- Regression ---
     # use spark decision tree in regression mode with same control parameters
-    spark_data = ...
-    fit <- ml_decision_tree_regressor(x = spark_data, 
-                                      formula = yobs ~ . ,
+
+    x <- x %>% ft_vector_assembler(input_cols = features_col, output_col = "features")
+
+    model <- ml_decision_tree_regressor(x = x, # TODO filter for imputation mask ?
+                                      features_col = "features",
+                                      label_col = y,
                                       min_instances_per_node = minbucket,
+                                      #max_memory_in_mb = 256, # default, could be problematic for big datasets ?
                                       min_info_gain = cp
                                       )
-    
-    leafnr <- floor(as.numeric(row.names(fit$frame[fit$where, ])))
-    fit$frame$yval <- as.numeric(row.names(fit$frame))
-    # Predict:
-    nodes <- predict(object = fit, newdata = xmis)
-    donor <- lapply(nodes, function(s) yobs[leafnr == s])
-    impute <- vapply(seq_along(donor), function(s) sample(donor[[s]], 1), numeric(1))
-  } else { 
-    
+
+    # leafnr <- floor(as.numeric(row.names(fit$frame[fit$where, ])))
+    # fit$frame$yval <- as.numeric(row.names(fit$frame))
+    # # Predict:
+    # nodes <- predict(object = fit, newdata = xmis)
+    # donor <- lapply(nodes, function(s) yobs[leafnr == s])
+    # impute <- vapply(seq_along(donor), function(s) sample(donor[[s]], 1), numeric(1))
+  } else {
+
     # --- Classification ---
     # escape with same impute if the dependent does not vary
     cat.has.all.obs <- table(yobs) == sum(ry)
     if (any(cat.has.all.obs)) {
       return(rep(levels(yobs)[cat.has.all.obs], sum(wy)))
     }
-    
+
     xy <- cbind(yobs, xobs)
     xy <- droplevels(xy)
     spark_data = ...
@@ -98,7 +102,7 @@ mice.impute.spark.cart <- function(y, ry, x, wy = NULL, minbucket = 5, cp = 1e-0
                                        )
     # Predict:
     nodes <- predict(object = fit, newdata = xmis)
-    
+
     impute <- apply(nodes,
                     MARGIN = 1,
                     FUN = function(s) {
@@ -108,8 +112,8 @@ mice.impute.spark.cart <- function(y, ry, x, wy = NULL, minbucket = 5, cp = 1e-0
                     }
     )
   }
-  
-  
-  
+
+
+
   impute
 }

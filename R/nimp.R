@@ -25,7 +25,6 @@ nimp <- function(where, blocks = make.blocks(where)) {
 
 
 # Spark version of nimp. Sould handle spark dataframes (where)
-# Number of imputation, Spark version
 nimp.spark <- function(where, blocks = make.blocks(where)) {
   # Compute the column sum of the where (logical) matrix
   # Convert bool to numeric

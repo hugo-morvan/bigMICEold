@@ -36,7 +36,7 @@ make.method <- function(data,
 make.method.spark <- function(data,
                         where = make.where.spark(data),
                         blocks = make.blocks(data),
-                        defaultMethod = c("spark.cart", "spark.logreg", "spark.polyreg", "spark.polr")) { #spark.[] methods TBD
+                        defaultMethod = c("spark.linreg", "spark.logreg", "spark.polyreg", "spark.polr")) { #spark.[] methods TBD
   method <- rep("", length(blocks))
   print("**DEBUG** make.method.spark")
   print(method)

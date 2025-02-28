@@ -1,48 +1,7 @@
 #' Imputation by logistic regression
 #'
 #' Imputes univariate missing data using logistic regression.
-#'
-#' @aliases mice.impute.logreg
-#' @inheritParams mice.impute.pmm
-#' @param ... Other named arguments.
-#' @return Vector with imputed data, same type as \code{y}, and of length
-#' \code{sum(wy)}
-#' @author Stef van Buuren, Karin Groothuis-Oudshoorn
-#' @details
-#' Imputation for binary response variables by the Bayesian logistic regression
-#' model (Rubin 1987, p. 169-170).  The
-#' Bayesian method consists of the following steps:
-#' \enumerate{
-#' \item Fit a logit, and find (bhat, V(bhat))
-#' \item Draw BETA from N(bhat, V(bhat))
-#' \item Compute predicted scores for m.d., i.e. logit-1(X BETA)
-#' \item Compare the score to a random (0,1) deviate, and impute.
-#' }
-#' The method relies on the
-#' standard \code{glm.fit} function. Warnings from \code{glm.fit} are
-#' suppressed. Perfect prediction is handled by the data augmentation
-#' method.
-#'
-#' @seealso \code{\link{mice}}, \code{\link{glm}}, \code{\link{glm.fit}}
-#' @references Van Buuren, S., Groothuis-Oudshoorn, K. (2011). \code{mice}:
-#' Multivariate Imputation by Chained Equations in \code{R}. \emph{Journal of
-#' Statistical Software}, \bold{45}(3), 1-67.
-#' \doi{10.18637/jss.v045.i03}
-#'
-#' Brand, J.P.L. (1999). Development, Implementation and Evaluation of Multiple
-#' Imputation Strategies for the Statistical Analysis of Incomplete Data Sets.
-#' Ph.D. Thesis, TNO Prevention and Health/Erasmus University Rotterdam. ISBN
-#' 90-74479-08-1.
-#'
-#' Venables, W.N. & Ripley, B.D. (1997). Modern applied statistics with S-Plus
-#' (2nd ed). Springer, Berlin.
-#'
-#' White, I., Daniel, R. and Royston, P (2010). Avoiding bias due to perfect
-#' prediction in multiple imputation of incomplete categorical variables.
-#' Computational Statistics and Data Analysis, 54:22672275.
-#' @family univariate imputation functions
-#' @keywords datagen
-#' @export
+
 
 mice.impute.spark.logreg <- function(y, ry, x, wy = NULL, augment_data = FALSE, ...) {
   # If the where to impute argument is not specified (wy),
@@ -74,33 +33,61 @@ mice.impute.spark.logreg <- function(y, ry, x, wy = NULL, augment_data = FALSE, 
   # beta.star <- beta + rv %*% rnorm(ncol(rv))
 
   # fit model using Spark
-  # model <- training_data %>% ml_logistic_regression(label ~ features)
+  # Get the features names
+  cols <- sparklyr::sdf_schema(x)
+  features_col <- setdiff(names(cols), label_col)
+
+  # Drop String type, DateType, TimestampType columns as not supported by logistic regression
+  features_col <- features_col[sapply(cols[features_col],
+            function(x) !x$type %in% c("StringType", "DateType", "TimestampType"))]
+
+  # Create the features vector column
+  x <- x %>% ft_vector_assembler(input_cols = features_col, output_col = "features")
 
   model <- ml_logistic_regression(
-    x = x[ry, , drop = FALSE],
-    features_col = "features", #TODO: replace this
-    label_col = "label",       #TODO: replace this #TODO: replace this
+    x = x, # TODO filter for imputation mask ?
+    features_col = "features",
+    label_col = y,
     family = "auto", # Good choice ?
-    weight_col = "weight_col", # weights = w[ry],
+    #weight_col = "weight_col", # weights = w[ry], # TODO Account for weights ?
     max_iter = 100
   )
   # The object returned depends on the class of x.
   # If it is a spark_connection, the function returns a ml_estimator object.
   # If it is a ml_pipeline, it will return a pipeline with the predictor appended to it.
   # If a tbl_spark, it will return a tbl_spark with the predictions added to it.
-  # TODO Run some test to understand of this all work. you can do it Hugo
-  fit <- ml_fit(model) #?
-  model_summary <- summary(model)
-  print(model_summary)
-  pred <- ml_predict(fit, test_data)
 
+  # beta <- coef(fit)
+  # beta <- model$coefficients
+  # rv <- t(chol(sym(fit.sum$cov.unscaled)))
+  # Big problem: Spark ml_logistic_regression does not return the covariance matrix...
+  # beta.star <- beta + rv %*% rnorm(ncol(rv))
+  # Solution ? : use the bootstrap code instead ?
+  beta.star <- model$coefficients
+  # print(class(beta.star))
   # draw imputations
-  p <- 1 / (1 + exp(-(x[wy, , drop = FALSE] %*% beta.star)))
-  vec <- (runif(nrow(p)) <= p)
-  vec[vec] <- 1
-  if (is.factor(y)) {
-    vec <- factor(vec, c(0, 1), levels(y))
-  }
+  # p <- 1 / (1 + exp(-(x[wy, , drop = FALSE] %*% beta.star)))
+
+  # p is a vector of probabilities
+  # p <- 1 / (1 + exp(-(x[wy, ] %*% beta.star)))
+  # TODO: Test this code
+  p <- x %>%
+    ft_vector_assembler(input_cols = colnames(x), output_col = "features_vector") %>%
+    mutate(linear_pred = ml_dot_product(features_vector, lit(beta_star))) %>%
+    mutate(p = 1/(1 + exp(-linear_pred)))
+  # If p is greater than a random number between 0 and 1, set the value to 1
+  # vec <- (runif(nrow(p)) <= p)
+  vec <- p %>%
+    mutate(random_val = rand()) %>%
+    mutate(vec = when(random_val <= p, 1, 0))
+
+  #vec[vec] <- 1
+  vec <- vec %>% mutate(vec = as.numeric(vec))
+  # If y is a factor, convert vec to a factor
+  # factor are specific to R, so no need for that ?
+  # if (is.factor(y)) {
+  #   vec <- factor(vec, c(0, 1), levels(y))
+  # }
   vec
 }
 
