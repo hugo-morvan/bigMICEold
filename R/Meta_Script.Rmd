@@ -1,0 +1,428 @@
+
+Loading libraries
+
+```{r libraries}
+library(mice)
+library(sparklyr)
+library(dplyr)
+library(profmem)
+library(ggplot2)
+library(parallel)
+
+```
+
+spark config
+```{r}
+conf <- spark_config()
+conf$`sparklyr.shell.driver-memory`<- "1G"
+conf$spark.memory.fraction <- 0.6
+conf$`sparklyr.cores.local` <- 4
+
+sc = spark_connect(master = "local", config = conf)
+
+```
+
+# Data
+
+```{r}
+path = "C:\\Users\\hugom\\Desktop\\CAMEO\\Code\\sesar_dummy_100_020MVR.csv"
+
+# Spark dataframe
+#spark_data = spark_read_csv(sc, name = "df", path , memory = F)
+
+# R dataframe
+data = read.csv(file = path)
+```
+
+preprocess data ?
+```{r}
+
+```
+
+# Utils
+Generate dataset subset
+```{r}
+generate_subset <- function(data, subset_size, replace=FALSE) {
+  n = nrow(data)
+  subset_size = n * subset_size
+  subset = data[sample(n, subset_size, replace=replace) ]
+  return(subset)
+}
+```
+
+Generate missing values
+```{r}
+
+```
+
+RMSE and modified RMSE.
+
+```{r}
+# From https://stefvanbuuren.name/fimd/sec-true.html
+# Compute the RMSE for the x variable
+rmse_1 <- function(truedata, imp, v = "x") {
+    mx <- where_artificially_missing_data[, v]
+    mse <- rep(NA, imp$m)
+    for (k in seq_len(imp$m)) {
+        filled <- mice::complete(imp, k)[mx, v]
+        true <- truedata[mx, v]
+        mse[k] <- mean((filled - true)^2)
+    }
+    sqrt(mean(mse))
+}
+rmse_0 <- function(true_data, imp, v = "x") {
+    mx <- where_artificially_missing_data[, v]
+    mse <- rep(NA, imp$m)
+    for (k in seq_len(imp$m)) {
+        filled <- mice::complete(imp, k)[mx, v]
+        true <- true_data[mx, v]
+        mse[k] <- mean(filled != true)
+    }
+    sqrt(mean(mse))
+}
+modified_rmse <- function(true_data, imp, v = "x") {
+    # If the variable is categorical, use the RMSE_0
+    if (is.factor(true_data[, v])) {
+        return(rmse_0(true_data, imp, v))
+    } else {
+        return(rmse_1(true_data, imp, v))
+    }
+}
+
+```
+
+Memory monitoring
+
+```{r}
+# Function to get memory usage in MB for a specific PID
+get_memory_usage <- function(pid) {
+  status <- readLines(sprintf("/proc/%d/status", pid))
+  vmrss <- as.numeric(gsub("[^0-9]", "", 
+                           status[grep("VmRSS:", status)]))  # Resident memory size
+  return(vmrss / 1024)  # Convert KB to MB
+}
+
+monitor_memory <- function(func, ..., 
+                           sampling_interval = 0.1,
+                           pre_time = 5,    # seconds to monitor before
+                           post_time = 10) { # seconds to monitor after
+  
+  
+  # Get the current process ID
+  parent_pid <- Sys.getpid()
+  
+  # Create fixed temporary files
+  signal_file <- "/tmp/memory_monitor_signal"
+  data_file <- "/tmp/memory_monitor_data.rds"
+  start_time_file <- "/tmp/memory_monitor_start.rds"
+  
+  # Remove any existing signal files
+  unlink(c(signal_file, data_file, start_time_file))
+  
+  # Initialize storage
+  memory_data <- data.frame(
+    timestamp = numeric(),
+    memory_mb = numeric(),
+    phase = character()
+  )
+  
+  start_time <- Sys.time()
+  
+  # Monitor before function call
+  cat("Monitoring pre-execution memory...\n")
+  while (difftime(Sys.time(), start_time, units="secs") < pre_time) {
+    memory_data <- rbind(memory_data, data.frame(
+      timestamp = as.numeric(difftime(Sys.time(), start_time, units="secs")),
+      memory_mb = get_memory_usage(parent_pid),
+      phase = "pre"
+    ))
+    Sys.sleep(sampling_interval)
+  }
+  
+  # Save start time and parent PID
+  saveRDS(list(start_time = start_time, pid = parent_pid), 
+          file = start_time_file)
+  
+  # Create monitoring script
+  monitor_script <- tempfile(fileext = ".R")
+  cat('
+  get_memory_usage <- function(pid) {
+    status <- readLines(sprintf("/proc/%d/status", pid))
+    vmrss <- as.numeric(gsub("[^0-9]", "", 
+      status[grep("VmRSS:", status)]))
+    return(vmrss / 1024)
+  }
+  
+  info <- readRDS("/tmp/memory_monitor_start.rds")
+  start_time <- info$start_time
+  parent_pid <- info$pid
+  signal_file <- "/tmp/memory_monitor_signal"
+  data_file <- "/tmp/memory_monitor_data.rds"
+  sampling_interval <- ', sampling_interval, '
+  
+  memory_data <- data.frame(
+    timestamp = numeric(),
+    memory_mb = numeric(),
+    phase = character()
+  )
+  
+  while (!file.exists(signal_file)) {
+    current_data <- data.frame(
+      timestamp = as.numeric(difftime(Sys.time(), start_time, units="secs")),
+      memory_mb = get_memory_usage(parent_pid),
+      phase = "during"
+    )
+    memory_data <- rbind(memory_data, current_data)
+    saveRDS(memory_data, file = data_file)
+    Sys.sleep(sampling_interval)
+  }
+  ', file = monitor_script)
+  
+  # Start monitoring in a separate process
+  during_start <- Sys.time()
+  cmd <- sprintf("Rscript %s", monitor_script)
+  monitoring_pid <- system(cmd, wait = FALSE)
+  
+  # Execute the main function
+  cat("Executing function and monitoring...\n")
+  result <- func(...)
+  
+  # Signal monitoring to stop and collect data
+  file.create(signal_file)
+  during_end <- Sys.time()
+  
+  # Give the monitoring process time to finish and save its last data
+  Sys.sleep(1)
+  
+  # Read and combine the monitoring data
+  if (file.exists(data_file)) {
+    during_data <- readRDS(data_file)
+    memory_data <- rbind(memory_data, during_data)
+  }
+  
+  # Monitor after function completion
+  cat("Monitoring post-execution memory...\n")
+  post_start <- Sys.time()
+  while (difftime(Sys.time(), post_start, units="secs") < post_time) {
+    memory_data <- rbind(memory_data, data.frame(
+      timestamp = as.numeric(difftime(Sys.time(), start_time, units="secs")),
+      memory_mb = get_memory_usage(parent_pid),
+      phase = "post"
+    ))
+    Sys.sleep(sampling_interval)
+  }
+  
+  # Clean up temporary files
+  unlink(c(signal_file, data_file, monitor_script, start_time_file))
+  
+  # Sort data by timestamp to ensure proper ordering
+  memory_data <- memory_data[order(memory_data$timestamp), ]
+  
+  # Create visualization
+  p <- ggplot(memory_data, aes(x = timestamp, y = memory_mb, color = phase)) +
+    geom_line(size = 1) +
+    geom_vline(xintercept = as.numeric(difftime(during_start, start_time, units="secs")),
+               linetype = "dashed", color = "red") +
+    geom_vline(xintercept = as.numeric(difftime(during_end, start_time, units="secs")),
+               linetype = "dashed", color = "red") +
+    labs(title = "Memory Usage Over Time",
+         x = "Time (seconds)",
+         y = "Memory Usage (MB)",
+         color = "Phase") +
+    theme_minimal()
+  
+  print(p)
+  
+  # Return both the function result and the memory data
+  return(list(
+    result = result,
+    memory_data = memory_data,
+    run_time = difftime(during_end, during_start, units="secs"),
+    plot = p
+  ))
+}
+```
+
+Example of memory monitoring usage
+```{r}
+# Example usage
+code_to_be_monitored <- function(x) {
+  path = "sesar_dummy_10000_040MVR.csv"
+  print("loading data...")
+  data = read.csv(file = path)
+  print("data loaded")
+  print("Starting MICE...")
+  imp = mice(data, print=FALSE, seed=1, m=1, method="cart")
+  print("Finished MICE")
+}
+
+# Monitor the function
+results <- monitor_memory(
+  code_to_be_monitored,    # The function to monitor
+  x = NULL,    # Your function's parameters
+  sampling_interval = 0.1,  # How often to sample (in seconds)
+  pre_time = 5,           # How long to monitor before (in seconds)
+  post_time = 10          # How long to monitor after (in seconds)
+)
+```
+
+```{r}
+# source: https://bookdown.org/mwheymans/bookmi/rubins-rules.html
+#         https://bookdown.org/mwheymans/bookmi/measures-of-missing-data-information.html
+calculate_imputation_stat <- function(imputed_data, variable) {
+  # Calculates within and between imputation variances
+  m <- max(imputed_data$.imp)
+  
+  imputation_groups <- split(imputed_data, imputed_data$.imp)
+  imputation_groups <- imputation_groups[-1] # Remove the incomplete dataset
+
+  pooled_mean <- mean(imputed_data[[variable]], na.rm = TRUE)
+  #mean of the standard error squared.
+
+  within_var <- mean(sapply(imputation_groups, function(imp) { # TODO: make this a seperate function?
+    mean((imp[[variable]] - mean(imp[[variable]]))^2, na.rm = TRUE)
+  }))
+  
+  between_var <- mean(sapply(imputation_groups, function(imp) { # TODO: make this a seperate function?
+    (mean(imp[[variable]], na.rm = TRUE) - pooled_mean)^2
+  }))/(m - 1)
+  
+  total_var <- within_var + between_var + between_var / m
+  
+  SE_pooled <- sqrt(total_var)
+  
+  # Fraction of missing information
+  lambda <- (between_var + between_var / m) / total_var
+  
+  #Relative increase in variance due to nonresponse
+  RIV <- (between_var + between_var / m) / within_var
+  
+  # Degrees of freedom
+  n = nrow(imputed_data) # number of observations
+  k = ncol(imputed_data) # number of variables
+  df_observed = ((n-k+1)/(n-k+3))*(n-k)*(1-lambda)
+  df_old = (m-1)/lambda^2
+  df_adjusted = (df_old*df_observed)/(df_old+df_observed)
+
+  df = df_adjusted
+  
+  t_df = qt(0.95, df)
+  
+  #Fraction of Missing Information
+  FMI = (RIV + (2/(df+3))) / (RIV + 1)
+  
+  #relative efficiency
+  RE = 1/(1 + FMI/m )
+  
+  CI = c(pooled_mean - t_df * SE_pooled, pooled_mean + t_df * SE_pooled)
+  
+  return(list(
+    within_variance = within_var,
+    between_variance = between_var,
+    total_variance = total_var,
+    lambda = lambda,
+    RIV = RIV,
+    df = df,
+    t_df = t_df,
+    FMI = FMI,
+    RE = RE,
+    CI = CI
+  ))
+}
+
+```
+
+
+# Question 3 and 4 script
+```{r}
+# Loop over multiple subset size of the dataset
+path = "C:\\Users\\hugom\\Desktop\\CAMEO\\Code\\sesar_dummy_100_020MVR.csv"
+
+data = read.csv(file = path)
+
+subset_sizes = c(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
+
+# source: https://stefvanbuuren.name/fimd/workflow.html
+mice_procedure <- function(data){
+  
+  missing_percentage <- mean(is.na(data)) * 100
+  num_imputations <- max(5, round(missing_percentage)) #rule of thumb...
+  imp = mice(data, print=FALSE, seed=1, m=num_imputations)
+  # Save the imputed datasets as a list of dataset
+  imputed_datasets <- complete(imp, action = "long", include = TRUE)
+  # %%%% Calculate the imputation statistics for variables of interest %%%%
+  ODI_stat <- calculate_imputation_stat(imputed_datasets, "IV_ODI")
+  ESS_stat <- calculate_imputation_stat(imputed_datasets, "IV_ESS")
+  
+  return(list(
+    ODI_stat = ODI_stat,
+    ESS_stat = ESS_stat
+  ))
+}
+
+results_df <- data.frame(
+  sample_size = integer(),      
+  repetition = integer(),       
+  runtime_sec = numeric(),      
+  max_memory_MB = numeric(),    
+  RMSE = numeric(),             
+  variance = numeric(),         
+  predictive_uncertainty = numeric(),
+  stringsAsFactors = FALSE
+)
+
+num_repetitions = 20
+for (subset_size in subset_sizes) {
+  for (repetition in 1:num_repetitions) {
+    
+    print(paste("Subset size:", subset_size))
+    
+    # Generate subset
+    subset = generate_subset(data, subset_size, replace=FALSE)
+    
+    # Monitor memory and runtime
+    monitor_results <- monitor_memory(
+      mice_procedure,
+      data = subset,
+      sampling_interval = 1,
+      pre_time = 5,
+      post_time = 10
+    )
+    # Monitor-memory returns result = result,memory_data = memory_data,plot = p
+    # Extract results
+    results_df <- rbind(results_df, data.frame(
+      sample_size = size, 
+      repetition = rep, 
+      runtime_sec = monitor_results$run_time,
+      max_memory_MB = monitor_results$memory_data$memory_mb %>% max(),
+      stats = monitor_results$result
+    ))
+  } # end repetition loop
+} # end subset_size loop
+```
+
+# Visualization of results
+
+```{r}
+runtime_summary <- results_df %>%
+  group_by(sample_size) %>%
+  summarize(
+    mean_runtime = mean(runtime_sec),
+    variance_runtime = var(runtime_sec),  # Variance of runtime across 20 repetitions
+    .groups = "drop"
+  )
+
+ggplot(runtime_summary, aes(x = sample_size, y = mean_runtime)) +
+  geom_point(color = "blue", size = 3) +    # Mean runtime points
+  geom_errorbar(aes(ymin = mean_runtime - sqrt(variance_runtime), 
+                    ymax = mean_runtime + sqrt(variance_runtime)), 
+                width = 50, color = "red") + # Error bars using standard deviation
+  geom_line(color = "black") +              # Line to connect points
+  labs(title = "Mean Runtime vs Sample Size",
+       x = "Sample Size",
+       y = "Mean Runtime (seconds)") +
+  theme_minimal()
+```
+
+
+

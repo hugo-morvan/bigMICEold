@@ -12,6 +12,14 @@ holy_data <- spark_read_csv(sc, name = "df_holy",
                              path = "C:\\Users\\hugom\\Desktop\\CAMEO\\Code\\sesar_dummy_100_020MVR.csv",
                              infer_schema = TRUE)
 r_holy_data <- read.csv("C:\\Users\\hugom\\Desktop\\CAMEO\\Code\\sesar_dummy_100_020MVR.csv")
+
+res <- mice_half_spark(r_holy_data)
+
+res <- mice(r_holy_data)
+
+res$predictorMatrix
+heatmap(res$predictorMatrix)
+
 class(dummy_data)
 
 cols <- sparklyr::sdf_schema(dummy_data)
