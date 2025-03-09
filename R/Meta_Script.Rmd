@@ -279,12 +279,13 @@ calculate_imputation_stat <- function(imputed_data, variable) {
   pooled_mean <- mean(imputed_data[[variable]], na.rm = TRUE)
   #mean of the standard error squared.
 
-  within_var <- mean(sapply(imputation_groups, function(imp) { # TODO: make this a seperate function?
+  within_var <- mean(sapply(imputation_groups, function(imp) { # TODO: make this a separate function?
     mean((imp[[variable]] - mean(imp[[variable]]))^2, na.rm = TRUE)
   }))
   
   between_var <- mean(sapply(imputation_groups, function(imp) { # TODO: make this a seperate function?
-    (mean(imp[[variable]], na.rm = TRUE) - pooled_mean)^2
+    (mean(imp[[variable]], na.rm = TRUE) - pooled_mean)^2nohup Rscript render_document.R > output.log 2>&1 &
+
   }))/(m - 1)
   
   total_var <- within_var + between_var + between_var / m

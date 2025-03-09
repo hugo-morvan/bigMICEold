@@ -1,4 +1,3 @@
-
 # The sampler controls the actual Gibbs sampling iteration scheme.
 # This function is called by mice and mice.mids
 spark.sampler <- function(data, m, ignore, where, imp, blocks, method,
@@ -34,7 +33,7 @@ spark.sampler <- function(data, m, ignore, where, imp, blocks, method,
           for (j in blocks[[h]]) {
             y <- data[, j]
             ry <- r[, j]
-            wy <- where[, j] # wy is the imputation mask ?
+            wy <- where[, j] # wy is the imputation mask on column y
             data[(!ry) & wy, j] <- imp[[j]][(!ry)[wy], i]
           }
         }
@@ -53,10 +52,10 @@ spark.sampler <- function(data, m, ignore, where, imp, blocks, method,
           theMethod <- method[h]
           # if theMethod is empty, then the block is skipped
           empt <- theMethod == ""
-          univ <- !empt && !is.passive(theMethod) &&
-            !handles.format(paste0("mice.impute.", theMethod))
-          mult <- !empt && !is.passive(theMethod) &&
-            handles.format(paste0("mice.impute.", theMethod))
+          # Note: && means that if !empt && !is.passive(theMethod) is Falsem the last booleam is NOT evaluated,
+          # since it will not change the outcome. This is to save computation compared to single &.
+          univ <- !empt && !is.passive(theMethod) && !handles.format(paste0("mice.impute.", theMethod))
+          mult <- !empt && !is.passive(theMethod) && handles.format(paste0("mice.impute.", theMethod))
           pass <- !empt && is.passive(theMethod) && length(blocks[[h]]) == 1
           if (printFlag & !empt) cat(" ", b)
 
@@ -74,7 +73,7 @@ spark.sampler <- function(data, m, ignore, where, imp, blocks, method,
           if (univ) {
             for (j in b) {
               imp[[j]][, i] <-
-                sampler.univ( # call the sampler.univ function defined on line 186
+                spark.sampler.univ( # call the sampler.univ function defined on line 186
                   data = data, r = r, where = where,
                   pred = pred, formula = ff,
                   method = theMethod,
@@ -118,13 +117,13 @@ spark.sampler <- function(data, m, ignore, where, imp, blocks, method,
               ))
             } else {
               stop("Cannot call function of type ", ct,
-                call. = FALSE
+                   call. = FALSE
               )
             }
             if (is.null(imputes)) {
               stop("No imputations from ", theMethod,
-                h,
-                call. = FALSE
+                   h,
+                   call. = FALSE
               )
             }
             for (j in names(imputes)) {
@@ -140,7 +139,7 @@ spark.sampler <- function(data, m, ignore, where, imp, blocks, method,
               wy <- where[, j]
               ry <- r[, j]
               imp[[j]][, i] <- model.frame(as.formula(theMethod), data[wy, ],
-                na.action = na.pass
+                                           na.action = na.pass
               )
               data[(!ry) & wy, j] <- imp[[j]][(!ry)[wy], i]
             }
@@ -248,9 +247,8 @@ spark.sampler.univ <- function(data, r, where, pred, formula, method, yname, k,
   f <- paste("mice.impute", method, sep = ".") # create the function name to call
   imputes <- data[wy, j] # initialize imputes
   imputes[!cc] <- NA # set imputes to NA where cc is false
-
+  print(sum(cc))
   args <- c(list(y = y, ry = ry, x = x, wy = wy, type = type), user, list(...))
   imputes[cc] <- do.call(f, args = args) # call the imputation function
   imputes # return the imputes?
 }
-

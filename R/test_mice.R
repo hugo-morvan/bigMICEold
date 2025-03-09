@@ -145,7 +145,7 @@ dummy_data <- spark_read_csv(sc, name = "df",
 
 class(dummy_data)
 
-cols <- sparklyr::sdf_schema(dummy_data)
+cols <- sparklyr::sdf_schema(holy_data)
 
 label_col = "IV_Weight"
 
@@ -180,3 +180,73 @@ model_summary$deviance_residuals()
 model_summary$residuals()
 
 imputations <- ml_predict(model, dummy_data)
+
+
+
+
+
+impute_with_existing_where <- function(data, where) {
+  # Get column names
+  col_names <- colnames(data)
+
+  # Create a copy of the original dataframe to impute
+  imputed_df <- data
+
+  # Process each column for imputation
+  for (col in col_names) {
+    # Get the corresponding where column
+    where_col <- where %>%
+      select(!!col) %>%
+      collect()
+
+    # Check if there are any TRUE values in where (indicating missing values to impute)
+    has_missing <- any(where_col[[1]])
+
+    if (has_missing) {
+      # Get all observed values (where where_df value is FALSE)
+      observed_vals <- data %>%
+        sdf_bind_cols(where %>% select(!!col) %>% rename(is_missing = !!col)) %>%
+        filter(!is_missing) %>%
+        select(!!col) %>%
+        collect()
+
+      # If we have observed values to sample from
+      if (nrow(observed_vals) > 0) {
+        # Use spark_apply to replace missing values with samples
+        imputed_df <- imputed_df %>%
+          spark_apply(function(partition_df) {
+            # Get the column index
+            col_idx <- which(names(partition_df) == col)
+
+            # For each row in this partition
+            for (i in 1:nrow(partition_df)) {
+              # If the value is missing (NA), replace it with a random sample
+              if (is.na(partition_df[i, col_idx])) {
+                partition_df[i, col_idx] <- sample(observed_vals[[1]], 1)
+              }
+            }
+
+            return(partition_df)
+          },
+          columns = colnames(imputed_df),
+          group_by = NULL,
+          packages = FALSE)
+      }
+    }
+  }
+
+  return(imputed_df)
+}
+
+
+# Example usage:
+# Assuming sdf is your Spark DataFrame with missing values
+# And where_df is your existing where matrix (TRUE where values were missing)
+holy_data
+where <- make.where.spark(holy_data, keyword = "missing")
+
+imputed_df <- impute_with_existing_where(holy_data, where)
+
+
+
+

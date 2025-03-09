@@ -28,7 +28,7 @@ make.where <- function(data,
   keyword <- match.arg(keyword)
 
   data <- check.dataform(data)
-  n_rows <- data %>% dplyr::count() %>% dplyr::pull()
+  n_rows <- nrow(data)
 
   where <- switch(keyword,
     missing = is.na(data),

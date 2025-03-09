@@ -65,7 +65,7 @@ check.spark.dataform <- function(data) {
     )
   }
   # Checks for nested matrix/data.frame
-  
+
   for (col in cols) {
     if (grepl("array|struct", col$type, ignore.case = TRUE)) {
       # print("**DEBUG** in check_spark_dataframe, col$type: ") # DEBUG STATEMENT, remove later
@@ -94,45 +94,3 @@ check.m <- function(m) {
 }
 
 
-check.cluster <- function(data, predictorMatrix) {
-  # stop if the cluster variable is a factor
-  isclassvar <- apply(predictorMatrix == -2, 2, any)
-  for (j in colnames(predictorMatrix)) {
-    if (isclassvar[j] && lapply(data, is.factor)[[j]]) {
-      stop("Convert cluster variable ", j, " to integer by as.integer()")
-    }
-  }
-  TRUE
-}
-
-check.ignore <- function(ignore, data) {
-  if (is.null(ignore)) {
-    return(rep(FALSE, nrow(data)))
-  }
-  if (!is.logical(ignore)) {
-    stop("Argument ignore not a logical.")
-  }
-  if (length(ignore) != nrow(data)) {
-    stop(
-      "length(ignore) (", length(ignore),
-      ") does not match nrow(data) (", nrow(data), ")."
-    )
-  }
-  if (sum(!ignore) < 10L) {
-    warning(
-      "Fewer than 10 rows for fitting the imputation model. Are you sure?",
-      call. = FALSE
-    )
-  }
-  ignore
-}
-
-check.newdata <- function(newdata, data) {
-  if (is.null(newdata)) {
-    stop("No newdata found.")
-  }
-  if (!is.data.frame(newdata)) {
-    stop("newdata not a data.frame.")
-  }
-  newdata
-}
