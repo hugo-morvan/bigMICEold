@@ -185,68 +185,102 @@ imputations <- ml_predict(model, dummy_data)
 
 
 
-impute_with_existing_where <- function(data, where) {
-  # Get column names
-  col_names <- colnames(data)
+library(sparklyr)
+library(dplyr)
 
-  # Create a copy of the original dataframe to impute
-  imputed_df <- data
 
-  # Process each column for imputation
-  for (col in col_names) {
-    # Get the corresponding where column
-    where_col <- where %>%
-      select(!!col) %>%
-      collect()
+conf <- spark_config()
+conf$`sparklyr.shell.driver-memory`<- "128G"
+conf$spark.memory.fraction <- 0.6
+conf$`sparklyr.cores.local` <- 24
 
-    # Check if there are any TRUE values in where (indicating missing values to impute)
-    has_missing <- any(where_col[[1]])
+sc = spark_connect(master = "local", config = conf)
 
-    if (has_missing) {
-      # Get all observed values (where where_df value is FALSE)
-      observed_vals <- data %>%
-        sdf_bind_cols(where %>% select(!!col) %>% rename(is_missing = !!col)) %>%
-        filter(!is_missing) %>%
-        select(!!col) %>%
-        collect()
+path_DORS =     "/vault/hugmo418_amed/NDR-SESAR/Uttag Socialstyrelsen 2024/ut_r_par_ov_63851_2023.csv"
+path_NDR =      "/vault/hugmo418_amed/NDR-SESAR/Uttag SCB+NDR+SESAR 2024/FI_Lev_NDR.csv"
+path_SESAR_FU = "/vault/hugmo418_amed/NDR-SESAR/Uttag SCB+NDR+SESAR 2024/FI_Lev_SESAR_FU.csv"
+path_SESAR_IV = "/vault/hugmo418_amed/NDR-SESAR/Uttag SCB+NDR+SESAR 2024/FI_Lev_SESAR_IV.csv"
+path_SESAR_TS = "/vault/hugmo418_amed/NDR-SESAR/Uttag SCB+NDR+SESAR 2024/FI_Lev_SESAR_TS.csv"
+path_small_SESAR_IV = "/vault/hugmo418_amed/subsets_thesis_hugo/small_IV.csv"
 
-      # If we have observed values to sample from
-      if (nrow(observed_vals) > 0) {
-        # Use spark_apply to replace missing values with samples
-        imputed_df <- imputed_df %>%
-          spark_apply(function(partition_df) {
-            # Get the column index
-            col_idx <- which(names(partition_df) == col)
+data_small <- spark_read_csv(sc, name = "df",path = path_small_SESAR_IV,infer_schema = TRUE, null_value = 'NA')
+data_big <- spark_read_csv(sc, name="bigdf", path = path_SESAR_IV, infer_schema = TRUE, null_value = "NA" )
+data_big
 
-            # For each row in this partition
-            for (i in 1:nrow(partition_df)) {
-              # If the value is missing (NA), replace it with a random sample
-              if (is.na(partition_df[i, col_idx])) {
-                partition_df[i, col_idx] <- sample(observed_vals[[1]], 1)
-              }
-            }
+where <- make.where.spark(data, keyword = "missing")
+where
 
-            return(partition_df)
-          },
-          columns = colnames(imputed_df),
-          group_by = NULL,
-          packages = FALSE)
-      }
-    }
+imputed_sdf <- impute_with_random_samples(sc, data_big)
+spark_disconnect(sc)
+
+impute_with_random_samples <- function(sc, sdf, columns = NULL) {
+  # Given a spark connection sc, a spark dataframe sdf and optional column names
+  # return a spark dataframe where missing values are replaced with random samples
+  # from the observed values.
+
+  # If columns not specified, use all columns
+  if (is.null(columns)) {
+    columns <- colnames(sdf)
   }
 
-  return(imputed_df)
+  # Process each column
+  for (col_name in columns) {
+    print(col_name)
+    # Create a temporary view of the dataframe
+    sdf %>% sparklyr::spark_dataframe() %>%
+      invoke("createOrReplaceTempView", paste0("temp_", col_name))
+
+    # Get the column data type
+    col_type <- sdf %>%
+      sparklyr::sdf_schema() %>%
+      purrr::keep(~ .x$name == col_name) %>%
+      purrr::pluck(1, "type")
+
+    # SQL query to collect non-null values for sampling
+    sample_values_query <- paste0(
+      "SELECT ", col_name, " FROM temp_", col_name,
+      " WHERE ", col_name, " IS NOT NULL"
+    )
+
+    # Get distinct values for sampling
+    sample_values <- DBI::dbGetQuery(sc, sample_values_query)
+
+    # If there are no non-null values, skip this column
+    if (nrow(sample_values) == 0) {
+      warning(paste0("Column '", col_name, "' has no non-null values. Skipping."))
+      next
+    }
+
+    # Create a temporary table with the sample values
+    sdf_sample <- sparklyr::copy_to(
+      sc,
+      sample_values,
+      paste0("sample_", col_name),
+      overwrite = TRUE
+    )
+
+    # SQL to replace nulls with random samples
+    # We use the rand() function to randomly select values
+    random_sample_sql <- paste0(
+      "SELECT a.*, ",
+      "CASE WHEN a.", col_name, " IS NULL ",
+      "THEN b.", col_name, " ",
+      "ELSE a.", col_name, " END AS ", col_name, "_imputed ",
+      "FROM temp_", col_name, " a ",
+      "CROSS JOIN (SELECT * FROM sample_", col_name,
+      " ORDER BY rand() LIMIT 1) b"
+    )
+
+    # Apply the imputation
+    sdf <- DBI::dbGetQuery(sc, random_sample_sql) %>%
+      sparklyr::copy_to(sc, ., "temp_result", overwrite = TRUE) %>%
+      dplyr::select(-!!rlang::sym(col_name)) %>%
+      dplyr::rename(!!rlang::sym(col_name) := !!rlang::sym(paste0(col_name, "_imputed")))
+
+    # Clean up temporary views
+    DBI::dbExecute(sc, paste0("DROP VIEW IF EXISTS temp_", col_name))
+    sparklyr::tbl_uncache(sc, paste0("sample_", col_name))
+  }
+
+  return(sdf)
 }
-
-
-# Example usage:
-# Assuming sdf is your Spark DataFrame with missing values
-# And where_df is your existing where matrix (TRUE where values were missing)
-holy_data
-where <- make.where.spark(holy_data, keyword = "missing")
-
-imputed_df <- impute_with_existing_where(holy_data, where)
-
-
-
-

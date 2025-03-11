@@ -55,7 +55,7 @@ Generate missing values
 
 ```
 
-RMSE and modified RMSE.
+RMSE and modified RMSE. Good if we know the true values of the cells being imputed.
 
 ```{r}
 # From https://stefvanbuuren.name/fimd/sec-true.html
@@ -91,7 +91,7 @@ modified_rmse <- function(true_data, imp, v = "x") {
 
 ```
 
-Memory monitoring
+Memory monitoring. Function written with the help of Claude.ai
 
 ```{r}
 # Function to get memory usage in MB for a specific PID
@@ -266,6 +266,9 @@ results <- monitor_memory(
 )
 ```
 
+
+More imputation metrics. Good for when we DON'T know the true value of the cells being imputed:
+
 ```{r}
 # source: https://bookdown.org/mwheymans/bookmi/rubins-rules.html
 #         https://bookdown.org/mwheymans/bookmi/measures-of-missing-data-information.html
@@ -284,9 +287,8 @@ calculate_imputation_stat <- function(imputed_data, variable) {
   }))
   
   between_var <- mean(sapply(imputation_groups, function(imp) { # TODO: make this a seperate function?
-    (mean(imp[[variable]], na.rm = TRUE) - pooled_mean)^2nohup Rscript render_document.R > output.log 2>&1 &
-
-  }))/(m - 1)
+    (mean(imp[[variable]], na.rm = TRUE) - pooled_mean)^2
+    }))/(m - 1)
   
   total_var <- within_var + between_var + between_var / m
   
