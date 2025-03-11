@@ -225,7 +225,7 @@ impute_with_random_samples <- function(sc, sdf, columns = NULL) {
 
   # Process each column
   for (col_name in columns) {
-    print(col_name)
+    cat(col_name, " - ")
     # Create a temporary view of the dataframe
     sdf %>% sparklyr::spark_dataframe() %>%
       invoke("createOrReplaceTempView", paste0("temp_", col_name))

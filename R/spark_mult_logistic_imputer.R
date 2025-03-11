@@ -1,7 +1,7 @@
-impute_with_logistic_regression <- function(sc, sdf, target_col, feature_cols) {
+impute_with_mult_logistic_regression <- function(sc, sdf, target_col, feature_cols) {
   # Given a spark connection, a spark dataframe, a target column with missing values,
   # and feature columns without missing values, this function:
-  # 1. Builds a logistic regression model using complete cases
+  # 1. Builds a multinomial logistic regression model using complete cases
   # 2. Uses that model to predict missing values
   # 3. Returns a dataframe with imputed values in the target column
 
@@ -77,7 +77,7 @@ impute_with_logistic_regression <- function(sc, sdf, target_col, feature_cols) {
       # Replace the NULL values with predictions
       incomplete_data <- predictions %>%
         dplyr::select(-!!rlang::sym(target_col)) %>%
-        dplyr::mutate(prediction = as.logical(prediction)) %>%  # Convert explicitly if needed
+        #dplyr::mutate(prediction = as.logical(prediction)) %>%  # Convert explicitly if needed for binary logistic
         dplyr::rename(!!rlang::sym(target_col) := prediction)
     }
   }
@@ -122,7 +122,7 @@ data_small <- spark_read_csv(sc, name = "df",path = path_small_SESAR_IV,infer_sc
 
 cols <- sparklyr::sdf_schema(data_small)
 
-label_col = "IV_TherapySurgeryX"
+label_col = "IV_VeriByM" # 0, 1 or 9
 
 features_col <- setdiff(names(cols), label_col)
 
@@ -143,7 +143,7 @@ features_col <- features_col[sapply(cols[features_col],
 #  sparklyr::ft_vector_assembler(input_cols = features_col, output_col = "features")
 
 #Call the imputer
-imputed_missing_height <- impute_with_logistic_regression(sc, df_missing_height, label_col, features_col)
+imputed_missing_height <- impute_with_mult_logistic_regression(sc, df_missing_height, label_col, features_col)
 
 imputed_missing_height %>% select(label_col)
 

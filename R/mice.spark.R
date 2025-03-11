@@ -3,10 +3,10 @@ mice.spark <- function(data,
                        sc,
                        m = 5,
                        method = NULL,
-                       predictorMatrix,
+                       predictorMatrix = NULL,
                        ignore = NULL,
                        where = NULL,
-                       blocks,
+                       blocks = NULL,
                        visitSequence = NULL,
                        formulas,
                        modeltype = NULL,
@@ -28,97 +28,113 @@ mice.spark <- function(data,
   cols <- sparklyr::sdf_schema(data)
   m <- check.m(m)
 
-  mp <- missing(predictorMatrix)
-
-  predictorMatrix <- make.spark.predictorMatrix(data, blocks)
-
-  print("**DEBUG** where:")
-  print(where)
-  where <- check.where.spark(where, data, blocks)
-  print("**DEBUG** where after check.where:")
-  print(where)
+  # mp <- missing(predictorMatrix)
+  #
+  # predictorMatrix <- make.spark.predictorMatrix(data, blocks)
+  # print("**DEBUG** where:")
+  # print(where)
+  # where <- check.where.spark(where, data, blocks)
+  # print("**DEBUG** where after check.where:")
+  # print(where)
 
   from <- 1
   to <- from + maxit - 1
   # Calculate imputation mask ...
-  where <- make.where.spark(data, keyword = "missing")
-  observed <- make.where.spark(data, keyword = "observed")
+  #where <- make.where.spark(data, keyword = "missing")
+
+  #observed <- make.where.spark(data, keyword = "observed")
+
   # and initialize it with random sampling from where the data is not missing
-  imp_init <- data %>% sparklyr::sdf_sample(fraction = 0.1)
-  imp_init <- impute_with_random_samples(sc = sc, sdf = data)
+  #imp_init <- data %>% sparklyr::sdf_sample(fraction = 0.1)
 
+  # INITIALISE THE IMPUTATION USING RANDOM SAMPLING
+  #Do this inside or outside the m loop ?
+  #Do I want each imputation to start from the same sample or have more variation in initial condition ?
+  imp_init_random <- impute_with_random_samples(sc = sc, sdf = data)
 
+  # initialise return object:
+  imputation_results = c()
   # FOR EACH IMPUTATION SET i = 1, ..., m
   for (i in 1:m) {
     cat("Iteration: ", i, "\n")
     # Load data, imputation mask and imputation set
+    # is the copy needed ?
     data <- sparklyr::sdf_copy_to(sc, data)
-    where <- sparklyr::sdf_copy_to(sc, where)
-    imp <- sparklyr::sdf_copy_to(sc, imp_init)
+    imp_init <- sparklyr::sdf_copy_to(sc, imp_init_random)
 
     # Run the imputation algorithm
-    imp <- sampler.spark(data, m, where, imp, predictorMatrix, modeltype, c(from, to))
+    imp <- sampler.spark(data, imp_init, c(from, to))
 
-    # Save imputation set to disk
-    #write.csv(imp, file = paste0("imp_", i, ".csv"))
+    # Save imputation to dataframe ?
+
+    imputation_results = rbind(imputation_results, imp)
 
   }
 
-  return(NULL)
+  return(imputation_results)
 }
 
 
-sampler.spark <- function(data, m, where, imp, predictorMatrix, modeltype, fromto){
+sampler.spark <- function(sc, data, imp_init, fromto){
+  # This function takes a sparc connection sc, a spark dataframe data, an initial imputation (by random sampling),
+  # and a range of iteration fromto (0-maxit) (done like this to follow mice() format)
+
+  #TODO; add support for functionalities present in the mice() function (where, ignore, blocks, predictorMatrix, formula, ...)
+
   # For iteration k in fromto
   from = fromto[1]
   to = fromto[2]
   # get the variable type of each variable in the data and store that into an array
   var_names <- sparklyr::sdf_schema(data)
-
+  cols <- sparklyr::sdf_schema(data)
   var_types = get_var_types(data, var_names)
 
-  for (k in from:to){
-    # For each variable j in the data
-    for (var_j in var_names){
-      # Obtain the variables use to predict the missing values of variable j and create feature column
-      predictors = predictorMatrix[var_j]
-      # Create feature vector for MLlib models
-      data <- data %>%
-        sparklyr::ft_vector_assembler(input_cols = predictors, output_col = "features")
-      # Get the variable type then choose the appropriate imputation method
 
+  for (k in from:to){
+    cat("\n iteration: ", k)
+    # For each variable j in the data
+    for (var_j in names(var_names)){
+      cat("\nImputing variable", var_j,". ")
+      # Obtain the variables use to predict the missing values of variable j and create feature column
+      label_col <- var_j
+
+      feature_cols <- setdiff(names(var_names), label_col)
+      #print(feature_cols)
+      #Filter out Date data type
+      feature_cols <- feature_cols[sapply(cols[feature_cols],
+                                          function(x) !x$type %in% c("StringType", "DateType", "TimestampType"))]
+
+      # replace random sample values in label column with the original missing values
+      j_df <- imp_init %>%
+        sparklyr::select(-label_col) %>%
+        cbind(data %>% sparklyr::select(all_of(label_col)))
+
+      # Get the variable type then choose the appropriate imputation method
       # Create the model
       if (var_types[[var_j]] == "Numerical"){
-        model <- sparklyr::ml_linear_regression(
-          x = dummy_data,
-          features_col = "features",
-          label_col = var,
-        )
+        cat("Numerical type detected, imputing using linear regression. ")
+        imp_init <- impute_with_linear_regression(sc, j_df, label_col, feature_cols)
+
       } else if (var_types[[var_j]] == "Categorical"){
-        model <- sparklyr::ml_logistic_regression(
-          x = dummy_data,
-          features_col = "features",
-          label_col = var,
-        )
+        cat("Categorical type detected, imputing using multinomial logistic regression. ")
+        imp_init <- impute_with_mult_logistic_regression(sc, j_df, label_col, feature_cols)
+
       } else if (var_types[[var_j]] == "Binary"){
-        model <- sparklyr::ml_logistic_regression(
-          x = dummy_data,
-          features_col = "features",
-          label_col = var,
-        )
-      } else if (var_types[[var_j]] == "Unsupported"){
+        cat("Binary type detected, imputing using logistic regression. ")
+        imp_init <- impute_with_logistic_regression(sc, j_df, label_col, feature_cols)
+
+      } else if(var_types[[var_j]] == "Unsupported"){
+        cat("Unsupported type detected, skipping imputation for this variable.")
         # Do nothing, pass to the next for loop iteration
         next
+      } else{
+        cat("Nothing was detected, woopsies")
       }
+    } #end of var_j loop
 
-      # replace the missing values (imp) with the imputed values using ml_pr[edict]
-
-      imp <- imp %>%
-        sparklyr::mutate(var_j = ifelse(is.na(var_j), model %>% sparklyr::ml_predict(data), var_j))
-
-    }
-
-  }
+  } #end of k loop
+  # The sampler has finish his iterative work, can now return the imputed dataset ?
+  return(imp_init)
 }
 
 
@@ -229,7 +245,7 @@ impute_with_random_samples <- function(sc, sdf, columns = NULL) {
 
   # Process each column
   for (col_name in columns) {
-    print(col_name)
+    cat(col_name, " - ")
     # Create a temporary view of the dataframe
     sdf %>% sparklyr::spark_dataframe() %>%
       invoke("createOrReplaceTempView", paste0("temp_", col_name))
@@ -283,7 +299,7 @@ impute_with_random_samples <- function(sc, sdf, columns = NULL) {
 
     # Clean up temporary views
     DBI::dbExecute(sc, paste0("DROP VIEW IF EXISTS temp_", col_name))
-    sparklyr::tbl_uncache(sc, paste0("sample_", col_name))
+    sparklyr::tbl_uncache(sc, paste0("sample_", tolower(col_name)))
   }
 
   return(sdf)
