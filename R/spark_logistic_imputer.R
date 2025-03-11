@@ -76,8 +76,9 @@ impute_with_logistic_regression <- function(sc, sdf, target_col, feature_cols) {
 
       # Replace the NULL values with predictions
       incomplete_data <- predictions %>%
-        dplyr::select(-!!rlang::sym(target_col)) %>%  # Remove the original NULL column
-        dplyr::rename(!!rlang::sym(target_col) := prediction)  # Rename prediction to target_col
+        dplyr::select(-!!rlang::sym(target_col)) %>%
+        dplyr::mutate(prediction = as.logical(prediction)) %>%  # Convert explicitly if needed
+        dplyr::rename(!!rlang::sym(target_col) := prediction)
     }
   }
 
