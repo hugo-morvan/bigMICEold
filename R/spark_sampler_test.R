@@ -25,33 +25,54 @@ data_small <- spark_read_csv(sc, name = "df",path = path_small_SESAR_IV,infer_sc
 features <- names(sdf_schema(data_small))
 cols <- sdf_schema(data_small)
 filtered_features<- features[sapply(cols[features], function(x) !x$type %in% c("StringType", "DateType", "TimestampType"))]
-data <- data_small %>% select(all_of(filtered_features)) %>%
-  select(-"IV_TherapyBilevelPAPX") %>%
-  select(-"IV_TherapySplintX") %>%
-  select(-"IV_TherapySurgeryX") %>%
-  select(-"IV_TherapyWeightX") %>%
-  select(-"IV_PositionTherapyX")
+data <- data_small %>% select(all_of(filtered_features))
 imp_init <- impute_with_random_samples(sc, data)
 
 mice_imputed <- sampler.spark(sc, data, imp_init, fromto)
 
+# -------------- SESAR IV ----------------------------------------
+
+data_big <- spark_read_csv(sc, name = "sesar_iv", path = path_SESAR_IV, infer_schema = TRUE, null_value = 'NA')
+features_big <- names(sdf_schema(data_big))
+cols_big <- sdf_schema(data_big)
+filtered_big_features <- features_big[sapply(cols_big[features_big],
+          function(x) !x$type %in% c("StringType", "DateType", "TimestampType"))]
+big_data <- data_big %>% select(all_of(filtered_big_features))
+imp_init_big <- impute_with_random_samples(sc, big_data)
+
+code_to_be_monitored <- function(x) {
+
+  mice_imputed <- sampler.spark(sc, big_data, imp_init_big, fromto)
+}
+
+# Monitor the function
+results <- monitor_memory(
+  code_to_be_monitored,    # The function to monitor
+  x = NULL,    # Your function's parameters
+  sampling_interval = 0.1,  # How often to sample (in seconds)
+  pre_time = 1,           # How long to monitor before (in seconds)
+  post_time = 1          # How long to monitor after (in seconds)
+)
+
+cat("Sesar_IV runtime:", results$run_time/60,"min")
+imput = results$result
+results$plot
+# making sure it is the same size dataset
+results$result %>% sdf_nrow()
 
 
-data_big <- spark_read_csv(sc, name = "bdf", path = path_SESAR_IV, infer_schema = TRUE, null_value = 'NA')
+# -------------- SESAR TS ----------------------------------------
+
+data_big <- spark_read_csv(sc, name = "sesar_ts", path = path_SESAR_TS, infer_schema = TRUE, null_value = 'NA')
 features_big <- names(sdf_schema(data_big))
 cols_big <- sdf_schema(data_big)
 filtered_big_features <- features_big[sapply(cols_big[features_big], function(x) !x$type %in% c("StringType", "DateType", "TimestampType"))]
 big_data <- data_big %>% select(all_of(filtered_big_features))
 
-
-
-#Initialize imputation
-
-# Monitor runtime
-
 code_to_be_monitored <- function(x) {
   imp_init_big <- impute_with_random_samples(sc, big_data)
   mice_imputed <- sampler.spark(sc, big_data, imp_init_big, fromto)
+  return(mice_imputed)
 }
 
 # Monitor the function
@@ -65,8 +86,38 @@ results <- monitor_memory(
 
 cat("runtime:", results$run_time)
 imput = results$result
+# making sure it is the same size dataset
 results$result %>% sdf_nrow()
 
+# -------------- SESAR FU ----------------------------------------
+
+data_big <- spark_read_csv(sc, name = "sesar_fu", path = path_SESAR_FU, infer_schema = TRUE, null_value = 'NA')
+features_big <- names(sdf_schema(data_big))
+cols_big <- sdf_schema(data_big)
+filtered_big_features <- features_big[sapply(cols_big[features_big], function(x) !x$type %in% c("StringType", "DateType", "TimestampType"))]
+big_data <- data_big %>% select(all_of(filtered_big_features))
+
+code_to_be_monitored <- function(x) {
+  imp_init_big <- impute_with_random_samples(sc, big_data)
+  mice_imputed <- sampler.spark(sc, big_data, imp_init_big, fromto)
+  return(mice_imputed)
+}
+
+# Monitor the function
+results <- monitor_memory(
+  code_to_be_monitored,    # The function to monitor
+  x = NULL,    # Your function's parameters
+  sampling_interval = 0.1,  # How often to sample (in seconds)
+  pre_time = 1,           # How long to monitor before (in seconds)
+  post_time = 1          # How long to monitor after (in seconds)
+)
+
+cat("runtime:", results$run_time)
+imput = results$result
+# making sure it is the same size dataset
+results$result %>% sdf_nrow()
+
+#----- NDR -----------------------------------------------------
 
 data_really_big <- spark_read_csv(sc, name = "ndr", path = path_NDR, infer_schema = TRUE)
 features_really_big <- names(sdf_schema(data_really_big))
@@ -76,15 +127,10 @@ filtered_really_big_features <- features_really_big[sapply(cols_really_big[featu
 really_big_data <- data_really_big %>% select(all_of(filtered_really_big_features))
 #impt_init_really_big <- impute_with_random_samples(sc, really_big_data)
 
-
-
-#Initialize imputation
-
-# Monitor runtime
-
 code_to_be_monitored <- function(x) {
-  imp_init_really_big <- impute_with_random_samples(sc, really_big_data)
+  imp_init_really_big <- impute_with_random_samples(sc, really_big_data) #This takes way too long...
   mice_imputed <- sampler.spark(sc, really_big_data, imp_init_really_big, fromto)
+  return(mice_imputed)
 }
 
 # Monitor the function

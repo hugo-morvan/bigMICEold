@@ -112,15 +112,15 @@ sampler.spark <- function(sc, data, imp_init, fromto){
       # Get the variable type then choose the appropriate imputation method
       # Create the model
       if (var_types[[var_j]] == "Numerical"){
-        cat("Numerical type detected, imputing using linear regression. ")
+        cat(blue("Numerical type detected, imputing using linear regression. "))
         imp_init <- impute_with_linear_regression(sc, j_df, label_col, feature_cols)
 
       } else if (var_types[[var_j]] == "Categorical"){
-        cat("Categorical type detected, imputing using multinomial logistic regression. ")
+        cat(red("Categorical type detected, imputing using multinomial logistic regression. "))
         imp_init <- impute_with_mult_logistic_regression(sc, j_df, label_col, feature_cols)
 
       } else if (var_types[[var_j]] == "Binary"){
-        cat("Binary type detected, imputing using logistic regression. ")
+        cat(green("Binary type detected, imputing using logistic regression. "))
         imp_init <- impute_with_logistic_regression(sc, j_df, label_col, feature_cols)
 
       } else if(var_types[[var_j]] == "Unsupported"){

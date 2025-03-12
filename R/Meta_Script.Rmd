@@ -91,7 +91,8 @@ modified_rmse <- function(true_data, imp, v = "x") {
 
 ```
 
-Memory monitoring. Function written with the help of Claude.ai
+Memory monitoring. Function written with the help of Claude.ai.
+It would appear this function can only monitor single threaded programs, hence it is only accuratly monitoring the runtime of code not using spark, since spark starts multiples threads (i think ?)
 
 ```{r}
 # Function to get memory usage in MB for a specific PID
@@ -220,7 +221,7 @@ monitor_memory <- function(func, ...,
   
   # Create visualization
   p <- ggplot(memory_data, aes(x = timestamp, y = memory_mb, color = phase)) +
-    geom_line(size = 1) +
+    geom_line(linewidth = 1) +
     geom_vline(xintercept = as.numeric(difftime(during_start, start_time, units="secs")),
                linetype = "dashed", color = "red") +
     geom_vline(xintercept = as.numeric(difftime(during_end, start_time, units="secs")),
