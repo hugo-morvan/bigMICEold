@@ -39,10 +39,9 @@ mice_imputed <- sampler.spark(sc, data, imp_init, fromto)
 
 data_big <- spark_read_csv(sc, name = "bdf", path = path_SESAR_IV, infer_schema = TRUE, null_value = 'NA')
 features_big <- names(sdf_schema(data_big))
-cols_big <- sparklyr::sdf_schema(data_big)
-filtered_big_features <- features_big[sapply(cols[features_big], function(x) !x$type %in% c("StringType", "DateType", "TimestampType"))]
+cols_big <- sdf_schema(data_big)
+filtered_big_features <- features_big[sapply(cols_big[features_big], function(x) !x$type %in% c("StringType", "DateType", "TimestampType"))]
 big_data <- data_big %>% select(all_of(filtered_big_features))
-impt_init_big <- impute_with_random_samples(sc, big_data)
 
 
 
@@ -51,8 +50,8 @@ impt_init_big <- impute_with_random_samples(sc, big_data)
 # Monitor runtime
 
 code_to_be_monitored <- function(x) {
-
-  mice_imputed <- sampler.spark(sc, data, imp_init, fromto)
+  imp_init_big <- impute_with_random_samples(sc, big_data)
+  mice_imputed <- sampler.spark(sc, big_data, imp_init_big, fromto)
 }
 
 # Monitor the function
@@ -64,4 +63,38 @@ results <- monitor_memory(
   post_time = 1          # How long to monitor after (in seconds)
 )
 
+cat("runtime:", results$run_time)
+imput = results$result
+results$result %>% sdf_nrow()
 
+
+data_really_big <- spark_read_csv(sc, name = "ndr", path = path_NDR, infer_schema = TRUE)
+features_really_big <- names(sdf_schema(data_really_big))
+cols_really_big<- sdf_schema(data_really_big)
+filtered_really_big_features <- features_really_big[sapply(cols_really_big[features_really_big],
+                                            function(x) !x$type %in% c("StringType", "DateType", "TimestampType"))]
+really_big_data <- data_really_big %>% select(all_of(filtered_really_big_features))
+#impt_init_really_big <- impute_with_random_samples(sc, really_big_data)
+
+
+
+#Initialize imputation
+
+# Monitor runtime
+
+code_to_be_monitored <- function(x) {
+  imp_init_really_big <- impute_with_random_samples(sc, really_big_data)
+  mice_imputed <- sampler.spark(sc, really_big_data, imp_init_really_big, fromto)
+}
+
+# Monitor the function
+results <- monitor_memory(
+  code_to_be_monitored,    # The function to monitor
+  x = NULL,    # Your function's parameters
+  sampling_interval = 0.1,  # How often to sample (in seconds)
+  pre_time = 1,           # How long to monitor before (in seconds)
+  post_time = 1          # How long to monitor after (in seconds)
+)
+
+cat("runtime:", results$run_time)
+imput = results$result

@@ -85,7 +85,7 @@ sampler.spark <- function(sc, data, imp_init, fromto){
   from = fromto[1]
   to = fromto[2]
   # get the variable type of each variable in the data and store that into an array
-  var_names <- sparklyr::sdf_schema(data)
+  var_names <- names(sparklyr::sdf_schema(data))
   cols <- sparklyr::sdf_schema(data)
   var_types = get_var_types(data, var_names)
 
@@ -93,12 +93,12 @@ sampler.spark <- function(sc, data, imp_init, fromto){
   for (k in from:to){
     cat("\n iteration: ", k)
     # For each variable j in the data
-    for (var_j in names(var_names)){
+    for (var_j in var_names){
       cat("\nImputing variable", var_j,". ")
       # Obtain the variables use to predict the missing values of variable j and create feature column
       label_col <- var_j
 
-      feature_cols <- setdiff(names(var_names), label_col)
+      feature_cols <- setdiff(var_names, label_col)
       #print(feature_cols)
       #Filter out Date data type
       feature_cols <- feature_cols[sapply(cols[feature_cols],
@@ -192,14 +192,16 @@ check.where.spark <- function(where, data) {
 get_var_types <- function(data, var_names) {
   # Initialize an empty vector to store variable types
   # TODO: Make this function better. right now it make bad guesses
-  var_list <- names(var_names)
-  types <- character(length(var_list))
-  names(types) <- var_list
+  types <- character(length(var_names))
+  names(types) <- var_names
 
+  schema <- sdf_schema(data)
+  schema_types <- setNames(sapply(schema, `[[`, "type"), sapply(schema, `[[`, "name"))
   # Loop through each variable in the schema
-  for (var_name in var_list) {
+  for (var_name in var_names) {
+
     # Extract the type information
-    var_type <- var_names[[var_name]]$type
+    var_type <- schema_types[[var_name]]
 
     # Categorize based on Spark types
     if (grepl("BooleanType", var_type)) {
