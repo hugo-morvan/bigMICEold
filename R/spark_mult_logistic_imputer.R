@@ -18,78 +18,90 @@ impute_with_mult_logistic_regression <- function(sc, sdf, target_col, feature_co
   complete_table_name <- paste0("complete_data_", floor(runif(1) * 1000000))
   incomplete_table_name <- paste0("incomplete_data_", floor(runif(1) * 1000000))
 
-  # Register temp view for SQL operations
-  sdf %>% sparklyr::spark_dataframe() %>%
-    invoke("createOrReplaceTempView", temp_table_name)
+  # Keep track of tables we create so we can clean them up
+  created_tables <- c()
 
   # Function to clean up temp tables (call this before any return)
   cleanup <- function() {
-    DBI::dbExecute(sc, paste0("DROP VIEW IF EXISTS ", temp_table_name))
-    sparklyr::tbl_uncache(sc, complete_table_name)
-    sparklyr::tbl_uncache(sc, incomplete_table_name)
-  }
-
-  # Step 1: Split data into complete and incomplete rows
-  # Get rows with non-null target values for training
-  complete_rows_query <- paste0(
-    "SELECT * FROM ", temp_table_name, " WHERE ", target_col, " IS NOT NULL"
-  )
-  complete_data <- DBI::dbGetQuery(sc, complete_rows_query) %>%
-    sparklyr::copy_to(sc, ., complete_table_name, overwrite = TRUE)
-
-  # Get rows with null target values for prediction
-  incomplete_rows_query <- paste0(
-    "SELECT * FROM ", temp_table_name, " WHERE ", target_col, " IS NULL"
-  )
-  incomplete_data <- DBI::dbGetQuery(sc, incomplete_rows_query) %>%
-    sparklyr::copy_to(sc, ., incomplete_table_name, overwrite = TRUE)
-
-  # Step 2: Check if we have enough data for training
-  complete_count <- complete_data %>% dplyr::count() %>% dplyr::pull(n)
-  if (complete_count < 10) {  # Minimum threshold for meaningful regression
-    message("Imputation impossible, not enough data")
-    cleanup()
-    return(sdf)
-  } else {
-    # Step 3: Build regression formula
-    formula_str <- paste0(target_col, " ~ ", paste(feature_cols, collapse = " + "))
-    formula_obj <- as.formula(formula_str)
-
-    # Step 4: Build multinomial logistic regression model on complete data
-    model <- complete_data %>%
-      ml_logistic_regression(formula = formula_obj)
-
-    # Step 5: Predict missing values
-    if (sparklyr::sdf_nrow(incomplete_data) > 0) {
-      # Make predictions - this creates additional columns
-      predictions <- ml_predict(model, incomplete_data)
-
-      # Use regular Spark operations instead of select/rename
-      # Get all original columns except the target column (which is NULL)
-      all_cols <- incomplete_data %>% colnames()
-      all_cols <- all_cols[all_cols != target_col]  # Remove target_col from the list
-
-      # Keep only original columns + renamed prediction column
-      incomplete_data <- predictions %>%
-        dplyr::rename(!!rlang::sym(target_col) := prediction) %>%
-        dplyr::select(dplyr::all_of(c(all_cols, target_col)))
+    for (table in created_tables) {
+      tryCatch({
+        DBI::dbExecute(sc, paste0("DROP VIEW IF EXISTS ", table))
+        sparklyr::tbl_uncache(sc, table)
+      }, error = function(e) {
+        # Silently ignore errors during cleanup
+      })
     }
   }
 
-  # Step 6: Combine complete and imputed data
-  if (sparklyr::sdf_nrow(incomplete_data) > 0) {
-    result <- complete_data %>%
-      dplyr::union_all(incomplete_data)
-  } else {
-    result <- complete_data
-  }
+  # Register the input dataframe as a temp view
+  tryCatch({
+    sdf %>%
+      sparklyr::sdf_register(temp_table_name)
+    created_tables <- c(created_tables, temp_table_name)
 
-  # Step 7: Clean up temp tables before returning
-  cleanup()
+    # Step 1: Split data into complete and incomplete rows
+    # Get rows with non-null target values for training
+    complete_data <- sdf %>%
+      dplyr::filter(!is.na(!!rlang::sym(target_col))) %>%
+      sparklyr::sdf_register(complete_table_name)
+    created_tables <- c(created_tables, complete_table_name)
 
-  return(result)
+    # Get rows with null target values for prediction
+    incomplete_data <- sdf %>%
+      dplyr::filter(is.na(!!rlang::sym(target_col))) %>%
+      sparklyr::sdf_register(incomplete_table_name)
+    created_tables <- c(created_tables, incomplete_table_name)
+
+    # Step 2: Check if we have enough data for training
+    complete_count <- complete_data %>% dplyr::count() %>% dplyr::pull(n)
+
+    if (complete_count < 10) {  # Minimum threshold for meaningful regression
+      message("Imputation impossible, not enough data")
+      cleanup()
+      return(sdf)
+    } else {
+      # Step 3: Build regression formula
+      formula_str <- paste0(target_col, " ~ ", paste(feature_cols, collapse = " + "))
+      formula_obj <- as.formula(formula_str)
+
+      # Step 4: Build multinomial logistic regression model on complete data
+      model <- complete_data %>%
+        ml_logistic_regression(formula = formula_obj)
+
+      # Step 5: Predict missing values
+      if (sparklyr::sdf_nrow(incomplete_data) > 0) {
+        # Make predictions
+        predictions <- ml_predict(model, incomplete_data)
+
+        # Get all columns from the predictions dataframe
+        pred_cols <- colnames(predictions)
+
+        # Remove any conflicting columns that might cause the duplicate error
+        cols_to_keep <- pred_cols[!pred_cols %in% c(target_col, "rawPrediction", "probability")]
+
+        # Now do a direct update of the target column with the prediction
+        incomplete_data_with_predictions <- predictions %>%
+          dplyr::select(dplyr::all_of(cols_to_keep)) %>%
+          dplyr::rename(!!rlang::sym(target_col) := prediction)
+
+        # Step 6: Combine complete and imputed data
+        result <- complete_data %>%
+          dplyr::union_all(incomplete_data_with_predictions)
+      } else {
+        result <- complete_data
+      }
+
+      # Step 7: Clean up temp tables before returning
+      cleanup()
+
+      return(result)
+    }
+  }, error = function(e) {
+    # Clean up on error
+    cleanup()
+    stop(paste("Error in imputation:", e$message))
+  })
 }
-
 # TESTING
 
 library(sparklyr)

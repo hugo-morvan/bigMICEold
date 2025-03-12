@@ -1,5 +1,6 @@
 # testing the sampler.spark function
 
+# ------------------- SPARK CONNECT --------------------------------
 library(sparklyr)
 library(dplyr)
 library(ggplot2)
@@ -26,23 +27,22 @@ features <- names(sdf_schema(data_small))
 cols <- sdf_schema(data_small)
 filtered_features<- features[sapply(cols[features], function(x) !x$type %in% c("StringType", "DateType", "TimestampType"))]
 data <- data_small %>% select(all_of(filtered_features))
-imp_init <- impute_with_random_samples(sc, data)
-
-mice_imputed <- sampler.spark(sc, data, imp_init, fromto)
-
-# -------------- SESAR IV ----------------------------------------
-
-data_big <- spark_read_csv(sc, name = "sesar_iv", path = path_SESAR_IV, infer_schema = TRUE, null_value = 'NA')
-features_big <- names(sdf_schema(data_big))
-cols_big <- sdf_schema(data_big)
-filtered_big_features <- features_big[sapply(cols_big[features_big],
-          function(x) !x$type %in% c("StringType", "DateType", "TimestampType"))]
-big_data <- data_big %>% select(all_of(filtered_big_features))
-imp_init_big <- impute_with_random_samples(sc, big_data)
-
+# data <- data %>% select(all_of(c("LopNr",
+#                                "SenPNr",
+#                                "IV_UnitCode",
+#                                "IV_County",
+#                                "IV_Height",
+#                                "IV_Weight",
+#                                "IV_BMI_Calculated",
+#                                "IV_BMI_UserSubmitted",
+#                                "IV_AHI",
+#                                "IV_ODI")))
+data %>% summarise(across(everything(), ~ sum(as.integer(is.na(.))), .names = "missing_{.col}")) %>%
+  collect() %>% unlist() %>% sum(na.rm = TRUE)
 code_to_be_monitored <- function(x) {
-
-  mice_imputed <- sampler.spark(sc, big_data, imp_init_big, fromto)
+  imp_init<- impute_with_random_samples(sc, data)
+  #mice_imputed <- sampler.spark(sc, data, imp_init, fromto)
+  #return(mice_imputed)
 }
 
 # Monitor the function
@@ -54,7 +54,44 @@ results <- monitor_memory(
   post_time = 1          # How long to monitor after (in seconds)
 )
 
-cat("Sesar_IV runtime:", results$run_time/60,"min")
+cat("runtime:", results$run_time)
+results$result %>% sdf_nrow()
+# -------------- SESAR IV ----------------------------------------
+
+data_big <- spark_read_csv(sc, name = "sesar_iv", path = path_SESAR_IV, infer_schema = TRUE, null_value = 'NA')
+features_big <- names(sdf_schema(data_big))
+cols_big <- sdf_schema(data_big)
+filtered_big_features <- features_big[sapply(cols_big[features_big],
+          function(x) !x$type %in% c("StringType", "DateType", "TimestampType"))]
+data <- data_big %>% select(all_of(filtered_big_features))
+data <- data %>% select(all_of(c("LopNr",
+                               "SenPNr",
+                               "IV_UnitCode",
+                               "IV_County",
+                               "IV_Height",
+                               "IV_Weight",
+                               "IV_BMI_Calculated",
+                               "IV_BMI_UserSubmitted",
+                               "IV_AHI",
+                               "IV_ODI")))
+data %>% summarise(across(everything(), ~ sum(as.integer(is.na(.))), .names = "missing_{.col}")) %>%
+  collect() %>% unlist() %>% sum(na.rm = TRUE)
+code_to_be_monitored <- function(x) {
+  imp_init_big <- impute_with_random_samples(sc, big_data)
+
+  #mice_imputed <- sampler.spark(sc, big_data, imp_init_big, fromto)
+}
+
+# Monitor the function
+results <- monitor_memory(
+  code_to_be_monitored,    # The function to monitor
+  x = NULL,    # Your function's parameters
+  sampling_interval = 0.1,  # How often to sample (in seconds)
+  pre_time = 1,           # How long to monitor before (in seconds)
+  post_time = 1          # How long to monitor after (in seconds)
+)
+
+cat("Sesar_IV runtime:", results$run_time)
 imput = results$result
 results$plot
 # making sure it is the same size dataset
@@ -69,10 +106,12 @@ cols_big <- sdf_schema(data_big)
 filtered_big_features <- features_big[sapply(cols_big[features_big], function(x) !x$type %in% c("StringType", "DateType", "TimestampType"))]
 big_data <- data_big %>% select(all_of(filtered_big_features))
 
+big_data %>% summarise(across(everything(), ~ sum(as.integer(is.na(.))), .names = "missing_{.col}")) %>%
+  collect() %>% unlist() %>% sum(na.rm = TRUE)
 code_to_be_monitored <- function(x) {
   imp_init_big <- impute_with_random_samples(sc, big_data)
-  mice_imputed <- sampler.spark(sc, big_data, imp_init_big, fromto)
-  return(mice_imputed)
+  #mice_imputed <- sampler.spark(sc, big_data, imp_init_big, fromto)
+  #return(mice_imputed)
 }
 
 # Monitor the function
@@ -97,10 +136,12 @@ cols_big <- sdf_schema(data_big)
 filtered_big_features <- features_big[sapply(cols_big[features_big], function(x) !x$type %in% c("StringType", "DateType", "TimestampType"))]
 big_data <- data_big %>% select(all_of(filtered_big_features))
 
+big_data %>% summarise(across(everything(), ~ sum(as.integer(is.na(.))), .names = "missing_{.col}")) %>%
+  collect() %>% unlist() %>% sum(na.rm = TRUE)
 code_to_be_monitored <- function(x) {
   imp_init_big <- impute_with_random_samples(sc, big_data)
-  mice_imputed <- sampler.spark(sc, big_data, imp_init_big, fromto)
-  return(mice_imputed)
+  #mice_imputed <- sampler.spark(sc, big_data, imp_init_big, fromto)
+  #return(mice_imputed)
 }
 
 # Monitor the function

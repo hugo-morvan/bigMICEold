@@ -74,6 +74,7 @@ mice.spark <- function(data,
   return(imputation_results)
 }
 
+library(crayon)
 
 sampler.spark <- function(sc, data, imp_init, fromto){
   # This function takes a sparc connection sc, a spark dataframe data, an initial imputation (by random sampling),
@@ -116,8 +117,9 @@ sampler.spark <- function(sc, data, imp_init, fromto){
         imp_init <- impute_with_linear_regression(sc, j_df, label_col, feature_cols)
 
       } else if (var_types[[var_j]] == "Categorical"){
-        cat(red("Categorical type detected, imputing using multinomial logistic regression. "))
-        imp_init <- impute_with_mult_logistic_regression(sc, j_df, label_col, feature_cols)
+        cat("Unsupported type detected, skipping imputation for this variable.")
+        # cat(red("Categorical type detected, imputing using multinomial logistic regression. "))
+        # imp_init <- impute_with_mult_logistic_regression(sc, j_df, label_col, feature_cols)
 
       } else if (var_types[[var_j]] == "Binary"){
         cat(green("Binary type detected, imputing using logistic regression. "))
