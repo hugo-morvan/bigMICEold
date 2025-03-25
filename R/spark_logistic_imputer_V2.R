@@ -1,4 +1,4 @@
-impute_with_logistic_regression <- function(sc, sdf, target_col, feature_cols) {
+impute_with_logistic_regression_V2 <- function(sc, sdf, target_col, feature_cols) {
   # Given a spark connection, a spark dataframe, a target column with missing values,
   # and feature columns without missing values, this function:
   # 1. Builds a logistic regression model using complete cases
@@ -41,7 +41,7 @@ impute_with_logistic_regression <- function(sc, sdf, target_col, feature_cols) {
     # Step 6: Combine complete and imputed data
     result <- complete_data %>%
         dplyr::union_all(incomplete_data)
-  
+
     return(result)
 }
 # TESTING
@@ -75,22 +75,23 @@ features_col <- setdiff(names(cols), label_col)
 imputed_sdf <- impute_with_random_samples(sc, data_small)
 
 # replace random sample values in IV_height with the original missing values
-df_missing_height <- imputed_sdf %>%select(-label_col) %>% cbind(data_small %>% select(all_of(label_col)))
+df_missing <- imputed_sdf %>%select(-label_col) %>% cbind(data_small %>% select(all_of(label_col)))
 
-df_missing_height
-df_missing_height %>% select(label_col)
+df_missing
+df_missing %>% select(label_col)
 
 #Filter out Date data type
 features_col <- features_col[sapply(cols[features_col],
                                     function(x) !x$type %in% c("StringType", "DateType", "TimestampType"))]
 
+get_var_types(df_missing, features_col)
 #initialize the feature column
 #df_missing_height <- df_missing_height %>%
 #  sparklyr::ft_vector_assembler(input_cols = features_col, output_col = "features")
 
 #Call the imputer
-imputed_missing_height <- impute_with_logistic_regression(sc, df_missing_height, label_col, features_col)
+imputed_missing <- impute_with_logistic_regression_V2(sc, df_missing_height, label_col, features_col)
 
-imputed_missing_height %>% select(label_col)
+imputed_missing %>% select(label_col)
 
 #spark_disconnect(sc)
