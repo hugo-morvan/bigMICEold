@@ -1,17 +1,19 @@
 impute_with_logistic_regression_V2 <- function(sc, sdf, target_col, feature_cols) {
-  # Given a spark connection, a spark dataframe, a target column with missing values,
-  # and feature columns without missing values, this function:
-  # 1. Builds a logistic regression model using complete cases
-  # 2. Uses that model to predict missing values
-  # 3. Returns a dataframe with imputed values in the target column
+    # Given a spark connection, a spark dataframe, a target column with missing values,
+    # and feature columns without missing values, this function:
+    # 1. Builds a logistic regression model using complete cases
+    # 2. Uses that model to predict missing values
+    # 3. Returns a dataframe with imputed values in the target column
 
-  # Validate inputs
+    # Step 0; Validate inputs
     if (!is.character(target_col) || length(target_col) != 1) {
         stop("target_col must be a single column name as a character string")
     }
     if (!is.character(feature_cols) || length(feature_cols) == 0) {
         stop("feature_cols must be a character vector of column names")
     }
+    #Step 1: add temporary id
+    sdf <- sdf %>% sparklyr::sdf_with_sequential_id()
 
     # Step 2: Split the data into complete and incomplete rows
     # Reminder: all non target columns will have been initialized
@@ -30,21 +32,28 @@ impute_with_logistic_regression_V2 <- function(sc, sdf, target_col, feature_cols
         ml_logistic_regression(formula = formula_obj)
 
     # Step 5: Predict missing values
-
     predictions <- ml_predict(model, incomplete_data)
+
+    print(predictions %>% select(prediction))
 
     # Replace the NULL values with predictions
     incomplete_data <- predictions %>%
         dplyr::select(-!!rlang::sym(target_col)) %>%  # Remove the original NULL column
-        dplyr::rename(!!rlang::sym(target_col) := as.logical(prediction))  # Rename prediction to target_col
+        dplyr::mutate(prediction = as.logical(prediction)) %>%
+        dplyr::rename(!!rlang::sym(target_col) := prediction)  # Rename prediction to target_col
 
     # Step 6: Combine complete and imputed data
     result <- complete_data %>%
-        dplyr::union_all(incomplete_data)
+      dplyr::union_all(incomplete_data)
+
+    result <- result %>%
+      dplyr::arrange(id) %>%
+      dplyr::select(-id)
 
     return(result)
 }
 # TESTING
+imputed_missing <- impute_with_logistic_regression_V2(sc, df_missing, label_col, features_col)
 
 library(sparklyr)
 library(dplyr)
@@ -68,14 +77,21 @@ data_small <- spark_read_csv(sc, name = "df",path = path_small_SESAR_IV,infer_sc
 
 cols <- sparklyr::sdf_schema(data_small)
 
-label_col = "IV_TherapySurgeryX"
+label_col = "IV_TherapySurgeryX" # Boolean in data
+# label_col = "IV_Depression" # 0/1 in data
 
 features_col <- setdiff(names(cols), label_col)
 
-imputed_sdf <- impute_with_random_samples(sc, data_small)
+impute_modes <- setNames(rep("mode", length(colnames(data_small))), colnames(data_small))
+impute_modes[c("LopNr","IV_SenPNr","IV_Height", "IV_Weight", "IV_BMI_Calculated","IV_BMI_UserSubmitted" )] <-
+  c("none","none",  "median",    "median",    "mean",              "mean")
 
-# replace random sample values in IV_height with the original missing values
-df_missing <- imputed_sdf %>%select(-label_col) %>% cbind(data_small %>% select(all_of(label_col)))
+imputed_sdf <- impute_with_MeMoMe(sc, data_small, impute_mode = impute_modes)
+
+# replace initialized values in label_col with the original missing values
+df_missing <- imputed_sdf %>%
+  select(-label_col) %>%
+  cbind(data_small %>% select(all_of(label_col)))
 
 df_missing
 df_missing %>% select(label_col)
@@ -90,7 +106,8 @@ get_var_types(df_missing, features_col)
 #  sparklyr::ft_vector_assembler(input_cols = features_col, output_col = "features")
 
 #Call the imputer
-imputed_missing <- impute_with_logistic_regression_V2(sc, df_missing_height, label_col, features_col)
+
+imputed_missing <- impute_with_logistic_regression_V2(sc, df_missing, label_col, features_col)
 
 imputed_missing %>% select(label_col)
 

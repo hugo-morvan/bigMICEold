@@ -15,7 +15,6 @@ impute_with_linear_regression_V2 <- function(sc, sdf, target_col, feature_cols, 
     if (!is.character(target_col) || length(target_col) != 1) {
         stop("target_col must be a single column name as a character string")
     }
-
     if (!is.character(feature_cols) || length(feature_cols) == 0) {
         stop("feature_cols must be a character vector of column names")
     }
@@ -40,7 +39,7 @@ impute_with_linear_regression_V2 <- function(sc, sdf, target_col, feature_cols, 
                              elastic_net_param = elastic_net_param)
 
     # Step 5: Predict missing values
-    predictions <- ml_predict(lm_model, incomplete_data, elastic_net_param = )
+    predictions <- ml_predict(lm_model, incomplete_data)
 
     # Replace the NULL values with predictions
     incomplete_data <- predictions %>%
@@ -91,8 +90,10 @@ impute_modes[c("LopNr","IV_SenPNr","IV_Height", "IV_Weight", "IV_BMI_Calculated"
 
 imputed_sdf <- impute_with_MeMoMe(sc, data_small, impute_mode = impute_modes)
 
-# replace random sample values in IV_height with the original missing values
-df_missing <- imputed_sdf %>%select(-label_col) %>% cbind(data_small %>% select(all_of(label_col)))
+# replace initialized values in label_col with the original missing values
+df_missing <- imputed_sdf %>%
+  select(-label_col) %>%
+  cbind(data_small %>% select(all_of(label_col)))
 
 df_missing
 df_missing %>% select(all_of(label_col))
