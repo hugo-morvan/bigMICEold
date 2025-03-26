@@ -48,7 +48,8 @@ impute_with_mean_mode <- function(sc, sdf, column = NULL) {
     # Get column type information
     schema <- sdf_schema(sdf)
     col_type <- setNames(sapply(schema, `[[`, "type"), sapply(schema, `[[`, "name"))
-
+    print("col_type")
+    print(col_type)
     # Impute based on data type
     if (grepl("DoubleType|float|IntegerType|long|decimal", col_type, ignore.case = TRUE)[1]) {
       # Numeric column - impute with mean
@@ -74,7 +75,7 @@ impute_with_mean_mode <- function(sc, sdf, column = NULL) {
       # Categorical column - impute with mode
       cat(" Imputing categorical data with mode\n")
 
-      # Calculate mode (most frequent value) of the column
+      # Calculate most frequent value (almost mode :/ )
       mode_value <- complete_data %>%
         dplyr::group_by(!!rlang::sym(col)) %>%
         dplyr::summarize(count = n()) %>%
@@ -98,6 +99,125 @@ impute_with_mean_mode <- function(sc, sdf, column = NULL) {
   return(result)
 }
 
+impute_with_MeMoMe  <- function(sc, sdf, column = NULL, impute_mode) {
+  # Validate impute_mode is provided
+  if (missing(impute_mode)) {
+    stop("impute_mode is a mandatory argument and must be specified for each column")
+  }
+
+  # Determine which columns to process
+  cols_to_process <- if (!is.null(column)) {
+    if (!is.character(column) || length(column) == 0) {
+      stop("column must be a character string")
+    }
+    column
+  } else {
+    colnames(sdf)
+  }
+
+  # Validate impute_mode matches number of columns
+  if (length(impute_mode) != length(cols_to_process)) {
+    stop("Length of impute_mode must match number of columns being processed")
+  }
+
+  # Validate impute_mode values
+  valid_modes <- c("mean", "mode", "median", "none")
+  invalid_modes <- setdiff(impute_mode, valid_modes)
+  if (length(invalid_modes) > 0) {
+    stop(paste("Invalid imputation modes:", paste(invalid_modes, collapse=", "),
+               "\nValid modes are:", paste(valid_modes, collapse=", ")))
+  }
+
+  # Add a sequential ID to preserve row order
+  result <- sdf %>%
+    sparklyr::sdf_with_sequential_id()
+
+  # Process each column
+  for (i in seq_along(cols_to_process)) {
+    col <- cols_to_process[i]
+    mode <- impute_mode[i]
+
+    cat("\n", col, "- ")
+
+    # Skip columns that don't exist
+    if (!(col %in% colnames(result))) {
+      warning(paste("Column", col, "not found in dataframe. Skipping."))
+      next
+    }
+
+    # If mode is "none", skip to next column
+    if (mode == "none") {
+      cat(" Skipping imputation as specified.\n")
+      next
+    }
+
+    # Split into complete and incomplete data for this column
+    complete_data <- result %>%
+      dplyr::filter(!is.na(!!rlang::sym(col)))
+
+    incomplete_data <- result %>%
+      dplyr::filter(is.na(!!rlang::sym(col)))
+
+    # If no missing values or no observed values, skip this column
+    if (sdf_nrow(incomplete_data) == 0) {
+      cat(" No missing values found. Skipping.\n")
+      next
+    }
+
+    if (sdf_nrow(complete_data) == 0) {
+      cat(" No observed values found. Skipping.\n")
+      next
+    }
+
+    # Calculate imputation value based on mode
+    impute_value <- if (mode == "mean") {
+      cat(" Imputing with mean\n")
+      value <- complete_data %>%
+        dplyr::summarize(impute_val = mean(!!rlang::sym(col), na.rm = TRUE)) %>%
+        dplyr::collect() %>%
+        dplyr::pull(impute_val)
+      cat(" Mean value:", value, "\n")
+      value
+    } else if (mode == "median") {
+      cat(" Imputing with median\n")
+      value <- complete_data %>%
+        dplyr::summarize(impute_val = median(!!rlang::sym(col), na.rm = TRUE)) %>%
+        dplyr::collect() %>%
+        dplyr::pull(impute_val)
+      cat(" Median value:", value, "\n")
+      value
+    } else if (mode == "mode") {
+      cat(" Imputing with mode\n")
+      value <- complete_data %>%
+        dplyr::group_by(!!rlang::sym(col)) %>%
+        dplyr::summarize(count = n()) %>%
+        dplyr::arrange(desc(count)) %>%
+        dplyr::collect() %>%
+        head(1) %>%
+        dplyr::pull(!!rlang::sym(col))
+      cat(" Mode value:", as.character(value), "\n")
+      value
+    }
+
+    # Create imputed dataframe
+    imputed_df <- result %>%
+      dplyr::mutate(!!rlang::sym(col) := if_else(is.na(!!rlang::sym(col)), impute_value, !!rlang::sym(col)))
+
+    # Update result with imputed dataframe
+    result <- imputed_df
+  }
+
+  # Sort by the sequential ID and drop the ID column
+  result <- result %>%
+    dplyr::arrange(id) %>%
+    dplyr::select(-id)
+
+  return(result)
+}
+impute_modes <- setNames(rep("mode", length(colnames(data_small))), colnames(data_small))
+impute_modes[c("LopNr","IV_SenPNr","IV_Height", "IV_Weight", "IV_BMI_Calculated","IV_BMI_UserSubmitted" )] <-
+              c("none","none",  "median",    "median",    "mean",              "mean")
+imputed <- impute_with_MeMoMe(sc, data_small, impute_mode = impute_modes)
 
 library(sparklyr)
 library(dplyr)
@@ -118,5 +238,8 @@ path_SESAR_TS = "/vault/hugmo418_amed/NDR-SESAR/Uttag SCB+NDR+SESAR 2024/FI_Lev_
 path_small_SESAR_IV = "/vault/hugmo418_amed/subsets_thesis_hugo/small_IV.csv"
 
 data_small <- spark_read_csv(sc, name = "df",path = path_small_SESAR_IV,infer_schema = TRUE, null_value = 'NA')
+
+# Note: if session fails to start/ fails to read and the error mentions hive,
+# Kill jvm related running processes and delete metastore_db folder, then restart conenction
 
 imputed <- impute_with_mean_mode(sc, data_small)
