@@ -1,104 +1,3 @@
-impute_with_mean_mode <- function(sc, sdf, column = NULL) {
-  # Given a spark connection, a spark dataframe, and an optional column name:
-  # 1. If column is specified, imputes missing values in that column only
-  # 2. If column is NULL, imputes missing values in all columns
-  # 3. Imputation is done using mean for numeric columns and mode for categorical columns
-  # 4. Returns a dataframe with imputed values
-
-  # Determine which columns to process
-  cols_to_process <- if (!is.null(column)) {
-    if (!is.character(column) || length(column) == 0) {
-      stop("column must be a character string")
-    }
-    column
-  } else {
-    colnames(sdf)
-  }
-
-  # Start with the original dataframe
-  result <- sdf
-
-  for (col in cols_to_process) {
-    cat("\n", col, "- ")
-
-    # Skip columns that don't exist
-    if (!(col %in% colnames(result))) {
-      warning(paste("Column", col, "not found in dataframe. Skipping."))
-      next
-    }
-
-    # Split into complete and incomplete data for this column
-    complete_data <- result %>%
-      dplyr::filter(!is.na(!!rlang::sym(col)))
-
-    incomplete_data <- result %>%
-      dplyr::filter(is.na(!!rlang::sym(col)))
-
-    # If no missing values or no observed values, skip this column
-    if (sdf_nrow(incomplete_data) == 0) {
-      cat(" No missing values found. Skipping.\n")
-      next
-    }
-
-    if (sdf_nrow(complete_data) == 0) {
-      cat(" No observed values found. Skipping.\n")
-      next
-    }
-
-    # Get column type information
-    schema <- sdf_schema(sdf)
-    col_type <- setNames(sapply(schema, `[[`, "type"), sapply(schema, `[[`, "name"))
-    print("col_type")
-    print(col_type)
-    # Impute based on data type
-    if (grepl("DoubleType|float|IntegerType|long|decimal", col_type, ignore.case = TRUE)[1]) {
-      # Numeric column - impute with mean
-      cat(" Imputing numeric data with mean\n")
-
-      # Calculate mean of the column
-      mean_value <- complete_data %>%
-        dplyr::summarize(mean_val = mean(!!rlang::sym(col), na.rm = TRUE)) %>%
-        dplyr::collect() %>%
-        dplyr::pull(mean_val)
-
-      cat(" Mean value:", mean_value, "\n")
-
-      # Create a dataframe with the mean value for this column
-      mean_df <- incomplete_data %>%
-        dplyr::mutate(!!rlang::sym(col) := mean_value)
-
-      # Union the incomplete data (now with imputed values) with the complete data
-      result <- complete_data %>%
-        dplyr::union_all(mean_df)
-
-    } else {
-      # Categorical column - impute with mode
-      cat(" Imputing categorical data with mode\n")
-
-      # Calculate most frequent value (almost mode :/ )
-      mode_value <- complete_data %>%
-        dplyr::group_by(!!rlang::sym(col)) %>%
-        dplyr::summarize(count = n()) %>%
-        dplyr::arrange(desc(count)) %>%
-        dplyr::collect() %>%
-        head(1) %>%
-        dplyr::pull(!!rlang::sym(col))
-
-      cat(" Mode value:", as.character(mode_value), "\n")
-
-      # Create a dataframe with the mode value for this column
-      mode_df <- incomplete_data %>%
-        dplyr::mutate(!!rlang::sym(col) := mode_value)
-
-      # Union the incomplete data (now with imputed values) with the complete data
-      result <- complete_data %>%
-        dplyr::union_all(mode_df)
-    }
-  }
-
-  return(result)
-}
-
 impute_with_MeMoMe  <- function(sc, sdf, column = NULL, impute_mode) {
   # Validate impute_mode is provided
   if (missing(impute_mode)) {
@@ -217,7 +116,8 @@ impute_with_MeMoMe  <- function(sc, sdf, column = NULL, impute_mode) {
 impute_modes <- setNames(rep("mode", length(colnames(data_small))), colnames(data_small))
 impute_modes[c("LopNr","IV_SenPNr","IV_Height", "IV_Weight", "IV_BMI_Calculated","IV_BMI_UserSubmitted" )] <-
               c("none","none",  "median",    "median",    "mean",              "mean")
-imputed <- impute_with_MeMoMe(sc, data_small, impute_mode = impute_modes)
+
+imputed_df <- impute_with_MeMoMe(sc, data_small, impute_mode = impute_modes)
 
 library(sparklyr)
 library(dplyr)
@@ -242,4 +142,89 @@ data_small <- spark_read_csv(sc, name = "df",path = path_small_SESAR_IV,infer_sc
 # Note: if session fails to start/ fails to read and the error mentions hive,
 # Kill jvm related running processes and delete metastore_db folder, then restart conenction
 
-imputed <- impute_with_mean_mode(sc, data_small)
+sdf_nrow(imputed_df)
+
+data_r <- data_small %>% collect()
+sum(is.na(data_r))
+sapply(data_r, function(x) sum(is.na(x)))
+
+imputed_collected <- imputed_df %>% collect()
+sum(is.na(imputed_collected))
+sapply(imputed_collected, function(x) sum(is.na(x)))
+
+df1 <- data_small %>% sdf_collect() %>%
+  select(all_of("IV_Weight")) %>%
+  mutate(source = "Original") %>%
+  filter(!is.na(IV_Weight))
+
+
+df2 <- imputed_df %>% sdf_collect() %>%
+  select(all_of("IV_Weight"))%>%
+  mutate(source = "MeMoMe")
+
+
+df_combined <- bind_rows(df1, df2)
+df_combined$source <- as.factor(df_combined$source)
+
+library(ggplot2)
+
+ggplot(df_combined, aes(x = IV_Weight, fill = source)) +
+  geom_histogram(alpha = 0.5, position = "identity", bins = 30) +
+  scale_fill_manual(values = c("blue", "red")) +
+  theme_minimal() +
+  labs(title = "Comparison of IV_Weight Distributions",
+       x = "IV Weight",
+       y = "Count",
+       fill = "Dataset")
+
+ggplot(df_combined, aes(x = IV_Weight, fill = source)) +
+  geom_density(alpha=0.5, size = 1.2) +  # Density plot with thicker lines
+  theme_minimal() +
+  labs(title = "Comparison of IV_Weight Distributions",
+       x = "IV Weight",
+       y = "Density",
+       fill = "Dataset")
+
+plot_variable_distributions <- function(df1, df2) {
+  df1$source <- "Dataset 1"
+  df2$source <- "Dataset 2"
+
+  df_combined <- rbind(df1, df2)
+
+  for (var in names(df1)) {
+    if (var == "source") next  # Skip the added source column
+
+    df_var <- df_combined[!is.na(df_combined[[var]]), ]  # Filter out NAs for each variable
+
+    if (is.numeric(df_var[[var]])) {
+      # Histogram with overlapping datasets
+      p1 <- ggplot(df_var, aes(x = .data[[var]], fill = source)) +
+        geom_histogram(alpha = 0.5, position = "identity", bins = 30) +
+        scale_fill_manual(values = c("blue", "red")) +
+        theme_minimal() +
+        labs(title = paste("Comparison of", var, "Distributions"),
+             x = var, y = "Count", fill = "Dataset")
+      print(p1)
+
+      # Density plot with overlapping datasets
+      p2 <- ggplot(df_var, aes(x = .data[[var]], fill = source)) +
+        geom_density(alpha = 0.5, size = 1.2) +
+        scale_fill_manual(values = c("blue", "red")) +
+        theme_minimal() +
+        labs(title = paste("Comparison of", var, "Density"),
+             x = var, y = "Density", fill = "Dataset")
+      print(p2)
+    } else {
+      # Bar plot with overlapping datasets
+      p3 <- ggplot(df_var, aes(x = .data[[var]], fill = source)) +
+        geom_bar(position = "dodge", alpha = 0.7) +
+        scale_fill_manual(values = c("blue", "red")) +
+        theme_minimal() +
+        labs(title = paste("Comparison of", var, "Counts"),
+             x = var, y = "Count", fill = "Dataset")
+      print(p3)
+    }
+  }
+}
+plot_variable_distributions(data_small %>% sdf_collect(),
+                            imputed_df %>% sdf_collect())

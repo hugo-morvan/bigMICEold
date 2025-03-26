@@ -56,10 +56,7 @@ impute_with_random_samples_old <- function(sc, sdf, column = NULL) {
     values_to_sample <- complete_data %>%
       dplyr::select(!!rlang::sym(col))
 
-    # Sample randomly from the observed values
-    # Use sdf_sample to get a random sample with replacement
-    sampled_values <- values_to_sample %>%
-      sdf_sample(fraction = 1, replacement = TRUE)
+
 
     # Limit the sampled values to match the number of missing values
     n_missing <- sdf_nrow(incomplete_data)
@@ -68,12 +65,14 @@ impute_with_random_samples_old <- function(sc, sdf, column = NULL) {
     n_observed <- sdf_nrow(complete_data)
     cat(" n_observed", n_observed)
 
-    # Calculate the fraction
-    fraction_needed <- n_missing / n_observed
-    cat(" fraction_needed", fraction_needed)
-    sampled_df <- sdf_sample(sdf, fraction = fraction_needed, replacement = TRUE, seed = 123)
-    n_sampled <- sdf_nrow(sampled_df)
-    cat(" n_sampled", n_sampled)
+    sampled_df <- complete_data %>%
+      dplyr::select(all_of(col)) %>%  # Only need the column to sample
+      dplyr::sample_n(size = n_missing, replace = TRUE) %>%
+      sdf_with_sequential_id(id = "id")
+
+      n_sampled <- sdf_nrow(sampled_df)
+      cat(" n_sampled", n_sampled)
+
 
     # Replace the NULL values with predictions
     incomplete_data <- sampled_df %>%
@@ -82,13 +81,14 @@ impute_with_random_samples_old <- function(sc, sdf, column = NULL) {
     result <- complete_data %>%
       dplyr::union_all(incomplete_data)
 
-
   }
 
   return(result)
 }
 
-impute_with_random_samples <- function(sc, sdf, column = NULL, plot_dist = FALSE) {
+imputed_sdf <- impute_with_random_samples_old(sc, data_small)
+
+impute_with_random_samples_v2 <- function(sc, sdf, column = NULL, plot_dist = FALSE) {
   # Works, but iterations are increasingly slow (exponentially ?)
   # This could be due to the increasingly complex query since spark is lazily loaded
 
@@ -147,6 +147,9 @@ impute_with_random_samples <- function(sc, sdf, column = NULL, plot_dist = FALSE
       dplyr::sample_n(size = n_missing, replace = TRUE) %>%
       sdf_with_sequential_id(id = "id")
 
+    n_sampled <- sdf_nrow(sampled_values)
+    cat(" n_sampled", n_sampled)
+
     # Add sequential ID to missing_data for joining
     missing_data_with_id <- missing_data %>%
       sdf_with_sequential_id(id = "id")
@@ -172,6 +175,7 @@ impute_with_random_samples <- function(sc, sdf, column = NULL, plot_dist = FALSE
       # Placeholder for plotting (implement as needed)
       cat("Plotting distributions (not implemented)\n")
     }
+
   }
 
   # Remove the temporary ID column and return
@@ -179,6 +183,8 @@ impute_with_random_samples <- function(sc, sdf, column = NULL, plot_dist = FALSE
     dplyr::arrange(temp_row_id) %>%
     dplyr::select(-"temp_row_id")
 }
+
+imputed_sdf <- impute_with_random_samples_v2(sc, data_small)
 
 impute_with_random_samples <- function(sc, sdf, column = NULL, plot_dist = FALSE) {
   # Works, but iterations are increasingly slow (exponentially ?)
