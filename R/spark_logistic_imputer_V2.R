@@ -1,4 +1,6 @@
 impute_with_logistic_regression_V2 <- function(sc, sdf, target_col, feature_cols) {
+    # FOR BOOLEAN VARIABLES ONLY (result of prediction is cast to logical)
+    # For 0/1 variables or categorical variables, use impute_with_mult_logistic_regression
     # Given a spark connection, a spark dataframe, a target column with missing values,
     # and feature columns without missing values, this function:
     # 1. Builds a logistic regression model using complete cases
@@ -100,15 +102,69 @@ df_missing %>% select(label_col)
 features_col <- features_col[sapply(cols[features_col],
                                     function(x) !x$type %in% c("StringType", "DateType", "TimestampType"))]
 
-get_var_types(df_missing, features_col)
-#initialize the feature column
-#df_missing_height <- df_missing_height %>%
-#  sparklyr::ft_vector_assembler(input_cols = features_col, output_col = "features")
-
 #Call the imputer
 
 imputed_missing <- impute_with_logistic_regression_V2(sc, df_missing, label_col, features_col)
 
 imputed_missing %>% select(label_col)
 
+# Inspection
+
+df_missing %>% pull(label_col)
+# Imputed labels (Notice that all the non-missing labels appears first, then the imputed ones)
+
+imputed_missing %>% select(all_of(label_col))
+temp <- sdf_with_unique_id(imputed_missing, id = "id") %>% arrange(-id)
+sdf_schema(temp)
+
+#temp %>% select(any_of("IV_Weight")) #Doesnt work, not sure why
+imputed_weight <- temp %>% sdf_collect() %>% select(all_of(label_col))
+
+library(dbplot)
+library(ggplot2)
+
+df1 <- data_small %>% sdf_collect() %>%
+  select(all_of(label_col)) %>%
+  mutate(source = "Original") %>%
+  filter(!is.na(!!sym(label_col)))
+
+df2 <- temp %>% sdf_collect() %>%
+  select(all_of(label_col))%>%
+  mutate(source = "Original+Imputed")
+
+df3 <- imputed_sdf %>% sdf_collect() %>%
+  select(all_of(label_col))%>%
+  mutate(source = "Init")
+
+
+df_combined <- bind_rows(df1, df2)
+df_combined <- bind_rows(df_combined, df3)
+df_combined$source <- as.factor(df_combined$source)
+
+ggplot(df_combined, aes(x = !!rlang::sym(label_col), fill = source)) +
+  geom_histogram(alpha = 0.5, position = "identity", bins = 30) +  # Overlapping histograms
+  scale_fill_manual(values = c("blue", "red", "green")) +  # Set custom colors
+  theme_minimal() +
+  labs(title = "Comparison of Distributions",
+       x = label_col,
+       y = "Count",
+       fill = "Dataset")
+
+ggplot(df_combined, aes(x = !!rlang::sym(label_col), fill = source)) +
+  geom_density(alpha=0.5, size = 1.2) +  # Density plot with thicker lines
+  scale_color_manual(values = c("Original" = "blue", "Original+Imputed" = "red", "Init" = "green")) +
+  theme_minimal() +
+  labs(title = "Comparison of Distributions",
+       x = label_col,
+       y = "Density",
+       fill = "Dataset")
+
+ggplot(df_combined, aes(x = !!rlang::sym(label_col), fill = source)) +
+  geom_bar(alpha=0.5, size = 1.2, position = "dodge") +
+  scale_color_manual(values = c("Original" = "blue", "Original+Imputed" = "red", "Init" = "green")) +
+  theme_minimal() +
+  labs(title = "Comparison of Distributions",
+       x = label_col,
+       y = "Density",
+       fill = "Dataset")
 #spark_disconnect(sc)

@@ -157,7 +157,7 @@ ggplot(df_combined, aes(x = IV_Weight, fill = source)) +
   theme_minimal() +
   labs(title = "Comparison of IV_Weight Distributions",
        x = "IV Weight",
-       y = "Count",
+       y = "Density",
        fill = "Dataset")
 
 
