@@ -11,7 +11,7 @@ impute_with_linear_regression_V2 <- function(sc, sdf, target_col, feature_cols, 
     # potential fix: add temporary row ID before the data split into comple/incomplete,
     # then do the procedure, then reorder by temp_id and remove temp_id before returning dataframe.
 
-    # Validate inputs
+    # Step 0; Validate inputs
     if (!is.character(target_col) || length(target_col) != 1) {
         stop("target_col must be a single column name as a character string")
     }
@@ -19,6 +19,8 @@ impute_with_linear_regression_V2 <- function(sc, sdf, target_col, feature_cols, 
     if (!is.character(feature_cols) || length(feature_cols) == 0) {
         stop("feature_cols must be a character vector of column names")
     }
+    #Step 1: add temporary id
+    sdf <- sdf %>% sparklyr::sdf_with_sequential_id()
 
     # Step 2: Split the data into complete and incomplete rows
     # Reminder: all non target columns will have been initialized
@@ -47,6 +49,10 @@ impute_with_linear_regression_V2 <- function(sc, sdf, target_col, feature_cols, 
 
     result <- complete_data %>%
           dplyr::union_all(incomplete_data)
+
+    result <- result %>%
+      dplyr::arrange(id) %>%
+      dplyr::select(-id)
 
     return(result)
 }
@@ -78,8 +84,12 @@ cols <- sparklyr::sdf_schema(data_small)
 label_col = "IV_Weight"
 
 features_col <- setdiff(names(cols), label_col)
+impute_modes <- setNames(rep("mode", length(colnames(data_small))), colnames(data_small))
+impute_modes[c("LopNr","IV_SenPNr","IV_Height", "IV_Weight", "IV_BMI_Calculated","IV_BMI_UserSubmitted" )] <-
+  c("none","none",  "median",    "median",    "mean",              "mean")
 
-imputed_sdf <- impute_with_random_samples(sc, data_small)
+
+imputed_sdf <- impute_with_MeMoMe(sc, data_small, impute_mode = impute_modes)
 
 # replace random sample values in IV_height with the original missing values
 df_missing <- imputed_sdf %>%select(-label_col) %>% cbind(data_small %>% select(all_of(label_col)))
@@ -106,6 +116,7 @@ df_missing %>% pull(label_col)
 imputed_missing %>% select(all_of(label_col))
 temp <- sdf_with_unique_id(imputed_missing, id = "id") %>% arrange(-id)
 sdf_schema(temp)
+
 #temp %>% select(any_of("IV_Weight")) #Doesnt work, not sure why
 imputed_weight <- temp %>% sdf_collect() %>% select(all_of("IV_Weight"))
 
@@ -123,7 +134,7 @@ df2 <- temp %>% sdf_collect() %>%
 
 df3 <- imputed_sdf %>% sdf_collect() %>%
   select(all_of("IV_Weight"))%>%
-  mutate(source = "RandomInit")
+  mutate(source = "Init")
 
 
 df_combined <- bind_rows(df1, df2)
