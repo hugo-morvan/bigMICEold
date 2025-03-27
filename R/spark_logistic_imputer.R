@@ -1,94 +1,62 @@
 impute_with_logistic_regression <- function(sc, sdf, target_col, feature_cols) {
-  # Given a spark connection, a spark dataframe, a target column with missing values,
-  # and feature columns without missing values, this function:
-  # 1. Builds a logistic regression model using complete cases
-  # 2. Uses that model to predict missing values
-  # 3. Returns a dataframe with imputed values in the target column
+    # FOR BOOLEAN VARIABLES ONLY (result of prediction is cast to logical)
+    # For 0/1 variables or categorical variables, use impute_with_mult_logistic_regression
+    # Given a spark connection, a spark dataframe, a target column with missing values,
+    # and feature columns without missing values, this function:
+    # 1. Builds a logistic regression model using complete cases
+    # 2. Uses that model to predict missing values
+    # 3. Returns a dataframe with imputed values in the target column
 
-  # Validate inputs
-  if (!is.character(target_col) || length(target_col) != 1) {
-    stop("target_col must be a single column name as a character string")
-  }
-  if (!is.character(feature_cols) || length(feature_cols) == 0) {
-    stop("feature_cols must be a character vector of column names")
-  }
+    # Step 0; Validate inputs
+    if (!is.character(target_col) || length(target_col) != 1) {
+        stop("target_col must be a single column name as a character string")
+    }
+    if (!is.character(feature_cols) || length(feature_cols) == 0) {
+        stop("feature_cols must be a character vector of column names")
+    }
+    #Step 1: add temporary id
+    sdf <- sdf %>% sparklyr::sdf_with_sequential_id()
 
-  # Create a unique temporary table name to avoid conflicts with multiple calls
-  temp_table_name <- paste0("temp_imputation_data_", floor(runif(1) * 1000000))
-  complete_table_name <- paste0("complete_data_", floor(runif(1) * 1000000))
-  incomplete_table_name <- paste0("incomplete_data_", floor(runif(1) * 1000000))
+    # Step 2: Split the data into complete and incomplete rows
+    # Reminder: all non target columns will have been initialized
+    complete_data <- sdf %>%
+        dplyr::filter(!is.na(!!rlang::sym(target_col)))
 
-  # Register temp view for SQL operations
-  sdf %>% sparklyr::spark_dataframe() %>%
-    invoke("createOrReplaceTempView", temp_table_name)
+    incomplete_data <- sdf %>%
+        dplyr::filter(is.na(!!rlang::sym(target_col)))
 
-  # Function to clean up temp tables (call this before any return)
-  cleanup <- function() {
-    DBI::dbExecute(sc, paste0("DROP VIEW IF EXISTS ", temp_table_name))
-    sparklyr::tbl_uncache(sc, complete_table_name)
-    sparklyr::tbl_uncache(sc, incomplete_table_name)
-  }
-
-  # Step 1: Split data into complete and incomplete rows
-  # Get rows with non-null target values for training
-  complete_rows_query <- paste0(
-    "SELECT * FROM ", temp_table_name, " WHERE ", target_col, " IS NOT NULL"
-  )
-  complete_data <- DBI::dbGetQuery(sc, complete_rows_query) %>%
-    sparklyr::copy_to(sc, ., complete_table_name, overwrite = TRUE)
-
-  # Get rows with null target values for prediction
-  incomplete_rows_query <- paste0(
-    "SELECT * FROM ", temp_table_name, " WHERE ", target_col, " IS NULL"
-  )
-  incomplete_data <- DBI::dbGetQuery(sc, incomplete_rows_query) %>%
-    sparklyr::copy_to(sc, ., incomplete_table_name, overwrite = TRUE)
-
-  # Step 2: Check if we have enough data for training
-  complete_count <- complete_data %>% dplyr::count() %>% dplyr::pull(n)
-  if (complete_count < 10) {  # Minimum threshold for meaningful regression
-    message("Imputation impossible, not enough data")
-    cleanup()
-    return(sdf)
-  } else {
     # Step 3: Build regression formula
     formula_str <- paste0(target_col, " ~ ", paste(feature_cols, collapse = " + "))
     formula_obj <- as.formula(formula_str)
 
     # Step 4: Build logistic regression model on complete data
     model <- complete_data %>%
-      ml_logistic_regression(formula = formula_obj)
+        ml_logistic_regression(formula = formula_obj)
 
     # Step 5: Predict missing values
-    if (sparklyr::sdf_nrow(incomplete_data) > 0) {
-      # Make predictions - this creates additional columns
-      predictions <- ml_predict(model, incomplete_data)
+    predictions <- ml_predict(model, incomplete_data)
 
-      # Use regular Spark operations instead of bind_cols
-      # Rename prediction to target_col and drop any other columns we don't need
-      all_cols <- incomplete_data %>% colnames()
-      all_cols <- all_cols[all_cols != target_col]  # Remove target_col from the list
+    print(predictions %>% select(prediction))
 
-      incomplete_data <- predictions %>%
-        dplyr::mutate(!!rlang::sym(target_col) := as.logical(prediction)) %>% # Convert to logical if needed
-        dplyr::select(dplyr::all_of(c(all_cols, target_col))) # Select only original columns + target_col
-    }
-  }
+    # Replace the NULL values with predictions
+    incomplete_data <- predictions %>%
+        dplyr::select(-!!rlang::sym(target_col)) %>%  # Remove the original NULL column
+        dplyr::mutate(prediction = as.logical(prediction)) %>%
+        dplyr::rename(!!rlang::sym(target_col) := prediction)  # Rename prediction to target_col
 
-  # Step 6: Combine complete and imputed data
-  if (sparklyr::sdf_nrow(incomplete_data) > 0) {
+    # Step 6: Combine complete and imputed data
     result <- complete_data %>%
       dplyr::union_all(incomplete_data)
-  } else {
-    result <- complete_data
-  }
 
-  # Step 7: Clean up temp tables before returning
-  cleanup()
+    result <- result %>%
+      dplyr::arrange(id) %>%
+      dplyr::select(-id)
 
-  return(result)
+    return(result)
 }
+
 # TESTING
+imputed_missing <- impute_with_logistic_regression(sc, df_missing, label_col, features_col)
 
 library(sparklyr)
 library(dplyr)
@@ -112,29 +80,92 @@ data_small <- spark_read_csv(sc, name = "df",path = path_small_SESAR_IV,infer_sc
 
 cols <- sparklyr::sdf_schema(data_small)
 
-label_col = "IV_TherapySurgeryX"
+label_col = "IV_TherapySurgeryX" # Boolean in data
+# label_col = "IV_Depression" # 0/1 in data
 
 features_col <- setdiff(names(cols), label_col)
 
-imputed_sdf <- impute_with_random_samples(sc, data_small)
+impute_modes <- setNames(rep("mode", length(colnames(data_small))), colnames(data_small))
+impute_modes[c("LopNr","IV_SenPNr","IV_Height", "IV_Weight", "IV_BMI_Calculated","IV_BMI_UserSubmitted" )] <-
+  c("none","none",  "median",    "median",    "mean",              "mean")
 
-# replace random sample values in IV_height with the original missing values
-df_missing_height <- imputed_sdf %>%select(-label_col) %>% cbind(data_small %>% select(all_of(label_col)))
+imputed_sdf <- impute_with_MeMoMe(sc, data_small, impute_mode = impute_modes)
 
-df_missing_height
-df_missing_height %>% select(label_col)
+# replace initialized values in label_col with the original missing values
+df_missing <- imputed_sdf %>%
+  select(-label_col) %>%
+  cbind(data_small %>% select(all_of(label_col)))
+
+df_missing
+df_missing %>% select(label_col)
 
 #Filter out Date data type
 features_col <- features_col[sapply(cols[features_col],
                                     function(x) !x$type %in% c("StringType", "DateType", "TimestampType"))]
 
-#initialize the feature column
-#df_missing_height <- df_missing_height %>%
-#  sparklyr::ft_vector_assembler(input_cols = features_col, output_col = "features")
-
 #Call the imputer
-imputed_missing_height <- impute_with_logistic_regression(sc, df_missing_height, label_col, features_col)
 
-imputed_missing_height %>% select(label_col)
+imputed_missing <- impute_with_logistic_regression_V2(sc, df_missing, label_col, features_col)
 
+imputed_missing %>% select(label_col)
+
+# Inspection
+
+df_missing %>% pull(label_col)
+# Imputed labels (Notice that all the non-missing labels appears first, then the imputed ones)
+
+imputed_missing %>% select(all_of(label_col))
+temp <- sdf_with_unique_id(imputed_missing, id = "id") %>% arrange(-id)
+sdf_schema(temp)
+
+#temp %>% select(any_of("IV_Weight")) #Doesnt work, not sure why
+imputed_weight <- temp %>% sdf_collect() %>% select(all_of(label_col))
+
+library(dbplot)
+library(ggplot2)
+
+df1 <- data_small %>% sdf_collect() %>%
+  select(all_of(label_col)) %>%
+  mutate(source = "Original") %>%
+  filter(!is.na(!!sym(label_col)))
+
+df2 <- temp %>% sdf_collect() %>%
+  select(all_of(label_col))%>%
+  mutate(source = "Original+Imputed")
+
+df3 <- imputed_sdf %>% sdf_collect() %>%
+  select(all_of(label_col))%>%
+  mutate(source = "Init")
+
+
+df_combined <- bind_rows(df1, df2)
+df_combined <- bind_rows(df_combined, df3)
+df_combined$source <- as.factor(df_combined$source)
+
+ggplot(df_combined, aes(x = !!rlang::sym(label_col), fill = source)) +
+  geom_histogram(alpha = 0.5, position = "identity", bins = 30) +  # Overlapping histograms
+  scale_fill_manual(values = c("blue", "red", "green")) +  # Set custom colors
+  theme_minimal() +
+  labs(title = "Comparison of Distributions",
+       x = label_col,
+       y = "Count",
+       fill = "Dataset")
+
+ggplot(df_combined, aes(x = !!rlang::sym(label_col), fill = source)) +
+  geom_density(alpha=0.5, size = 1.2) +  # Density plot with thicker lines
+  scale_color_manual(values = c("Original" = "blue", "Original+Imputed" = "red", "Init" = "green")) +
+  theme_minimal() +
+  labs(title = "Comparison of Distributions",
+       x = label_col,
+       y = "Density",
+       fill = "Dataset")
+
+ggplot(df_combined, aes(x = !!rlang::sym(label_col), fill = source)) +
+  geom_bar(alpha=0.5, size = 1.2, position = "dodge") +
+  scale_color_manual(values = c("Original" = "blue", "Original+Imputed" = "red", "Init" = "green")) +
+  theme_minimal() +
+  labs(title = "Comparison of Distributions",
+       x = label_col,
+       y = "Density",
+       fill = "Dataset")
 #spark_disconnect(sc)

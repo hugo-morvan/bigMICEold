@@ -1,5 +1,5 @@
-impute_with_random_forest_regressor<- function(sc, sdf, target_col, feature_cols) {
-    # Random forest imputer using sparklyr ml_random_forest Good for categorical values
+impute_with_random_forest_regressor <- function(sc, sdf, target_col, feature_cols) {
+    # Random forest regressor using sparklyr ml_random_forest Good for continuous values
     # Doc: https://rdrr.io/cran/sparklyr/man/ml_random_forest.html (sparklyr website doc sucks)
 
     #TODO: Added more flexibility for the user to use hyperparameters of the model (see doc)
@@ -51,7 +51,7 @@ impute_with_random_forest_regressor<- function(sc, sdf, target_col, feature_cols
     return(result)
 }
 
-impute_with_random_forest_classifier<- function(sc, sdf, target_col, feature_cols) {
+impute_with_random_forest_classifier <- function(sc, sdf, target_col, feature_cols) {
   # Random forest imputer using sparklyr ml_random_forest Good for categorical values
   # Doc: https://rdrr.io/cran/sparklyr/man/ml_random_forest.html (sparklyr website doc sucks)
 

@@ -1,6 +1,7 @@
 
 mice.spark <- function(data,
                        sc,
+                       init_mode, # Used for initialisation, should me a vector of ('none','mean','mode','median')
                        m = 5,
                        method = NULL,
                        predictorMatrix = NULL,
@@ -50,8 +51,13 @@ mice.spark <- function(data,
   # INITIALISE THE IMPUTATION USING RANDOM SAMPLING
   #Do this inside or outside the m loop ?
   #Do I want each imputation to start from the same sample or have more variation in initial condition ?
-  imp_init_random <- impute_with_random_samples(sc = sc, sdf = data)
 
+  #TODO : add support for column parameter in initialisation
+
+  imp_init_random <- impute_with_MeMoMe(sc = sc,
+                                        sdf = data,
+                                        column = NULL,
+                                        impute_mode = init_modes)
   # initialise return object:
   imputation_results = c()
   # FOR EACH IMPUTATION SET i = 1, ..., m

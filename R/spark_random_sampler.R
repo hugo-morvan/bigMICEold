@@ -284,6 +284,79 @@ impute_with_random_samples <- function(sc, sdf, column = NULL, plot_dist = FALSE
     dplyr::select(-"temp_row_id")
 }
 
+
+impute_with_random_samples <- function(sc, sdf, columns = NULL) {
+  # Given a spark connection sc, a spark dataframe sdf and optional column names
+  # return a spark dataframe where missing values are replaced with random samples
+  # from the observed values.
+
+  # If columns not specified, use all columns
+  if (is.null(columns)) {
+    columns <- colnames(sdf)
+  }
+
+  # Process each column
+  for (col_name in columns) {
+    cat(col_name, " - ")
+    # Create a temporary view of the dataframe
+    sdf %>% sparklyr::spark_dataframe() %>%
+      invoke("createOrReplaceTempView", paste0("temp_", col_name))
+
+    # Get the column data type
+    col_type <- sdf %>%
+      sparklyr::sdf_schema() %>%
+      purrr::keep(~ .x$name == col_name) %>%
+      purrr::pluck(1, "type")
+
+    # SQL query to collect non-null values for sampling
+    sample_values_query <- paste0(
+      "SELECT ", col_name, " FROM temp_", col_name,
+      " WHERE ", col_name, " IS NOT NULL"
+    )
+
+    # Get distinct values for sampling
+    sample_values <- DBI::dbGetQuery(sc, sample_values_query)
+
+    # If there are no non-null values, skip this column
+    if (nrow(sample_values) == 0) {
+      warning(paste0("Column '", col_name, "' has no non-null values. Skipping."))
+      next
+    }
+
+    # Create a temporary table with the sample values
+    sdf_sample <- sparklyr::copy_to(
+      sc,
+      sample_values,
+      paste0("sample_", col_name),
+      overwrite = TRUE
+    )
+
+    # SQL to replace nulls with random samples
+    # We use the rand() function to randomly select values
+    random_sample_sql <- paste0(
+      "SELECT a.*, ",
+      "CASE WHEN a.", col_name, " IS NULL ",
+      "THEN b.", col_name, " ",
+      "ELSE a.", col_name, " END AS ", col_name, "_imputed ",
+      "FROM temp_", col_name, " a ",
+      "CROSS JOIN (SELECT * FROM sample_", col_name,
+      " ORDER BY rand() LIMIT 1) b"
+    )
+
+    # Apply the imputation
+    sdf <- DBI::dbGetQuery(sc, random_sample_sql) %>%
+      sparklyr::copy_to(sc, ., "temp_result", overwrite = TRUE) %>%
+      dplyr::select(-!!rlang::sym(col_name)) %>%
+      dplyr::rename(!!rlang::sym(col_name) := !!rlang::sym(paste0(col_name, "_imputed")))
+
+    # Clean up temporary views
+    DBI::dbExecute(sc, paste0("DROP VIEW IF EXISTS temp_", col_name))
+    sparklyr::tbl_uncache(sc, paste0("sample_", tolower(col_name)))
+  }
+
+  return(sdf)
+}
+
 library(sparklyr)
 library(dplyr)
 

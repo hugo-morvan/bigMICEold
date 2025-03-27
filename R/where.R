@@ -127,3 +127,101 @@ check.where.spark <- function(where, data, blocks) {
   where
 }
 
+
+
+# Spark version of make.where
+make.where.spark <- function(data, keyword = c("missing", "all", "none", "observed")) {
+  keyword <- match.arg(keyword)
+
+  data <- check.spark.dataform(data)
+  where <- switch(keyword,
+                  missing = na_locations(data),
+                  all = data %>% mutate(across(everything(), ~ TRUE)),
+                  none = data %>% mutate(across(everything(), ~ FALSE)),
+                  observed = data %>% mutate(across(everything(), ~ !is.na(.)))
+  )
+  where
+}
+
+
+
+# Spark version of check.where
+check.where.spark <- function(where, data) {
+  if (is.null(where)) {
+    # print("**DEBUG** where is null")
+    where <- make.where.spark(data, keyword = "missing")
+  }
+
+  if (!inherits(where, "tbl_spark")) {
+    if (is.character(where)) {
+      return(make.where.spark(data, keyword = where))
+    } else {
+      stop("Argument `where` not a Spark DataFrame", call. = FALSE)
+    }
+  }
+  # Num rows of a spark data frame is unknown until pulled, so dim(X) returns (NA, n_cols)
+  # Thus n_rows needs to be calculated separately
+  n_rows_where = where %>% dplyr::count() %>% dplyr::pull()
+  # print("**DEBUG** n_rows_where:")
+  # print(n_rows_where)
+  n_rows_data = data %>% dplyr::count() %>% dplyr::pull()
+  # print("**DEBUG** n_rows_data:")
+  # print(n_rows_data)
+  if ((dim(data)[2] != dim(where)[2]) || (n_rows_where != n_rows_data)) {
+    stop("Arguments `data` and `where` not of same size", call. = FALSE)
+  }
+
+  #where <- as.logical(as.matrix(where)) #Not needed ?
+  if (is.na.spark(where)) { #from NA_utils.R
+    stop("Argument `where` contains missing values", call. = FALSE)
+  }
+
+  where
+}
+
+
+get_var_types <- function(data, var_names) {
+  # Initialize an empty vector to store variable types
+  # TODO: Make this function better. right now it make bad guesses
+  types <- character(length(var_names))
+  names(types) <- var_names
+
+  schema <- sdf_schema(data)
+  schema_types <- setNames(sapply(schema, `[[`, "type"), sapply(schema, `[[`, "name"))
+  # Loop through each variable in the schema
+  for (var_name in var_names) {
+
+    # Extract the type information
+    var_type <- schema_types[[var_name]]
+
+    # Categorize based on Spark types
+    if (grepl("BooleanType", var_type)) {
+      types[var_name] <- "Binary"
+
+    } else if (grepl("ByteType|ShortType|IntegerType|LongType", var_type)) {
+      types[var_name] <- "Numerical"
+
+    } else if (grepl("FloatType|DoubleType|DecimalType", var_type)) {
+      types[var_name] <- "Numerical"
+
+    } else if (grepl("StringType|CharType|VarcharType", var_type)) {
+      types[var_name] <- "Categorical"
+
+    } else  {
+      types[var_name] <- "Unsupported"
+    }
+
+    if (grepl("Type", var_name)) {
+      #if "Type" in the var name, set type to categorical (for sesar datasets)
+      types[var_name] <- "Categorical"
+    }
+  }
+
+  return(types)
+}
+# tests for get_var_types
+# var_names <- sparklyr::sdf_schema(dummy_data)
+# var_types <- get_var_types(dummy_data, var_names)
+# print(var_types)
+
+
