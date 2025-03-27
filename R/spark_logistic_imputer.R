@@ -35,8 +35,8 @@ impute_with_logistic_regression <- function(sc, sdf, target_col, feature_cols) {
 
     # Step 5: Predict missing values
     predictions <- ml_predict(model, incomplete_data)
-
-    print(predictions %>% select(prediction))
+    # print(complete_data %>% select(target_col))
+    # print(predictions %>% select(prediction))
 
     # Replace the NULL values with predictions
     incomplete_data <- predictions %>%

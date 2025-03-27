@@ -1,7 +1,7 @@
 
 mice.spark <- function(data,
                        sc,
-                       init_mode, # Used for initialisation, should me a vector of ('none','mean','mode','median')
+                       variable_types, # Used for initialization and method selection
                        m = 5,
                        method = NULL,
                        predictorMatrix = NULL,
@@ -17,72 +17,109 @@ mice.spark <- function(data,
                        maxit = 5,
                        printFlag = TRUE,
                        seed = NA,
-                       data.init = NULL,
+                       imp_init = NULL,
                        ...) {
-  call <- match.call()
-  #check.deprecated(...)
+
 
   if (!is.na(seed)) set.seed(seed)
 
   # check form of data and m
-  data <- check.spark.dataform(data)
-  cols <- sparklyr::sdf_schema(data)
-  m <- check.m(m)
+  #data <- check.spark.dataform(data)
+  cols <- names(variable_types)
+  #m <- check.m(m)
 
-  # mp <- missing(predictorMatrix)
-  #
-  # predictorMatrix <- make.spark.predictorMatrix(data, blocks)
-  # print("**DEBUG** where:")
-  # print(where)
-  # where <- check.where.spark(where, data, blocks)
-  # print("**DEBUG** where after check.where:")
-  # print(where)
 
   from <- 1
   to <- from + maxit - 1
-  # Calculate imputation mask ...
-  #where <- make.where.spark(data, keyword = "missing")
 
-  #observed <- make.where.spark(data, keyword = "observed")
+  # INITIALISE THE IMPUTATION USING Mean/Mode/Median SAMPLING
 
-  # and initialize it with random sampling from where the data is not missing
-  #imp_init <- data %>% sparklyr::sdf_sample(fraction = 0.1)
-
-  # INITIALISE THE IMPUTATION USING RANDOM SAMPLING
-  #Do this inside or outside the m loop ?
-  #Do I want each imputation to start from the same sample or have more variation in initial condition ?
+  # Do this inside or outside the m loop ?
+  # Do I want each imputation to start from the same sample or have more variation in initial condition ?
 
   #TODO : add support for column parameter in initialisation
 
-  imp_init_random <- impute_with_MeMoMe(sc = sc,
-                                        sdf = data,
-                                        column = NULL,
-                                        impute_mode = init_modes)
-  # initialise return object:
+  # Dictionnary to infer initialization method based on variable type
+  # Should be one of (mean, mode, median, none), and be used as input of MeMoMe function
+  init_dict <- c("Binary" = "mode",
+                 "Nominal" = "mode",
+                 "Ordinal" = "mode",
+                 "Code (don't impute)" = "none", # LopNr, Unit_code etc...
+                 "Continuous_int" = "median",
+                 "Continuous_float" = "mean",
+                 "smalldatetime" = "none",
+                 "String" = "none", #TBD
+                 "Count" = "median", #TBD
+                 "Semi-continuous" = "none", #TBD
+                 "Else", "none")
+
+  init_modes <- replace(variable_types, variable_types %in% names(init_dict), init_dict[variable_types])
+  names(init_modes) <- cols
+  print("**DEBUG**: init_modes:")
+  print(init_modes)
+
+  cat("\nStarting initialisation\n")
+  print(" ")
+
+  print(length(init_modes))
+  print(sdf_ncol(data))
+
+  init_start_time <- proc.time()
+  if(is.null(imp_init)){
+    imp_init <- impute_with_MeMoMe(sc = sc,
+                                  sdf = data,
+                                  column = NULL, #TODO: add support for this
+                                  impute_mode = init_modes)
+  }else{
+    print("initial imputation provided manually, I hope it is correct")
+    imp_init <- imp_init # User provided initiale imputation
+  }
+
+  init_end_time <- proc.time()
+  init_elapsed <- (init_end_time-init_start_time)['elapsed']
+  cat("Initalisation time:", init_elapsed)
+  # TODO : Add elapse time to the result dataframe (and create result dataframe)
+
+  # initialize return object (?) :
   imputation_results = c()
+
   # FOR EACH IMPUTATION SET i = 1, ..., m
   for (i in 1:m) {
     cat("Iteration: ", i, "\n")
-    # Load data, imputation mask and imputation set
-    # is the copy needed ?
-    data <- sparklyr::sdf_copy_to(sc, data)
-    imp_init <- sparklyr::sdf_copy_to(sc, imp_init_random)
 
     # Run the imputation algorithm
-    imp <- sampler.spark(data, imp_init, c(from, to))
+    cat("Starting imputation")
+
+    imp_start_time <- proc.time()
+
+    imp <- sampler.spark(sc = sc,
+                         data = data,
+                         imp_init = imp_init,
+                         fromto = c(from, to),
+                         var_types = variable_types,
+                         printFlag = printFlag)
+
+    imp_end_time <- proc.time()
+    imp_elapsed <- (imp_end_time-imp_start_time)['elapsed']
+    cat("Imputation time:", imp_elapsed)
 
     # Save imputation to dataframe ?
-
     imputation_results = rbind(imputation_results, imp)
 
+    # Calculate Rubin Rules statistics
+    # TODO
   }
 
   return(imputation_results)
 }
 
-library(crayon)
+sampler.spark <- function(sc,
+                          data,
+                          imp_init,
+                          fromto,
+                          var_types,
+                          printFlag){
 
-sampler.spark <- function(sc, data, imp_init, fromto){
   # This function takes a sparc connection sc, a spark dataframe data, an initial imputation (by random sampling),
   # and a range of iteration fromto (0-maxit) (done like this to follow mice() format)
 
@@ -91,11 +128,27 @@ sampler.spark <- function(sc, data, imp_init, fromto){
   # For iteration k in fromto
   from = fromto[1]
   to = fromto[2]
-  # get the variable type of each variable in the data and store that into an array
-  var_names <- names(sparklyr::sdf_schema(data))
-  cols <- sparklyr::sdf_schema(data)
-  var_types = get_var_types(data, var_names)
 
+  var_names <- names(sparklyr::sdf_schema(data))
+
+  # Method dictionary for imputation. Can change as desired
+  # TODO: implement; keep this as default, or use user-provided dict ?
+  method_dict <- c("Binary" = "Logistic",
+                   "Nominal" = "Mult_Logistic",
+                   "Ordinal" = "RandomForestClassifier",
+                   "Code (don't impute)" = "none", # LopNr, Unit_code etc...
+                   "Continuous_int" = "Linear",
+                   "Continuous_float" = "Linear",
+                   "smalldatetime" = "none",
+                   "String" = "none", #TBD
+                   "Count" = "RandomForestClassifier", #TBD
+                   "Semi-continuous" = "none", #TBD
+                   "Else" = "none")
+
+  imp_methods <- replace(var_types, var_types %in% names(method_dict), method_dict[var_types])
+  names(imp_methods) <- var_names
+  print(imp_methods)
+  result <- imp_init # Is this a valid copy ?
 
   for (k in from:to){
     cat("\n iteration: ", k)
@@ -108,210 +161,110 @@ sampler.spark <- function(sc, data, imp_init, fromto){
       feature_cols <- setdiff(var_names, label_col)
       #print(feature_cols)
       #Filter out Date data type
-      feature_cols <- feature_cols[sapply(cols[feature_cols],
-                                          function(x) !x$type %in% c("StringType", "DateType", "TimestampType"))]
+        feature_cols <- feature_cols[sapply(var_types[feature_cols],
+                                            function(x) !(x %in% c("String", "smalldatetime")))]
 
-      # replace random sample values in label column with the original missing values
-      j_df <- imp_init %>%
+      # Replace random sample values in label column with the original missing values
+      j_df <- result %>%
         sparklyr::select(-label_col) %>%
         cbind(data %>% sparklyr::select(all_of(label_col)))
 
-      # Get the variable type then choose the appropriate imputation method
-      # Create the model
-      if (var_types[[var_j]] == "Numerical"){
-        cat(blue("Numerical type detected, imputing using linear regression. "))
-        imp_init <- impute_with_linear_regression(sc, j_df, label_col, feature_cols)
 
-      } else if (var_types[[var_j]] == "Categorical"){
-        cat("Unsupported type detected, skipping imputation for this variable.")
-        # cat(red("Categorical type detected, imputing using multinomial logistic regression. "))
-        # imp_init <- impute_with_mult_logistic_regression(sc, j_df, label_col, feature_cols)
+      method <- imp_methods[[var_j]]
+      print("**DEBUG**: method selected")
+      print(method)
+      print(label_col)
 
-      } else if (var_types[[var_j]] == "Binary"){
-        cat(green("Binary type detected, imputing using logistic regression. "))
-        imp_init <- impute_with_logistic_regression(sc, j_df, label_col, feature_cols)
-
-      } else if(var_types[[var_j]] == "Unsupported"){
-        cat("Unsupported type detected, skipping imputation for this variable.")
-        # Do nothing, pass to the next for loop iteration
-        next
-      } else{
-        cat("Nothing was detected, woopsies")
-      }
+      result <- switch(method,
+         "Logistic" = impute_with_logistic_regression(sc, j_df, label_col, feature_cols),
+         "Mult_Logistic" = impute_with_mult_logistic_regression(sc, j_df, label_col, feature_cols),
+         "Linear" = impute_with_linear_regression(sc, j_df, label_col, feature_cols),
+         "RandomForestClassifier" = impute_with_random_forest_classifier(sc, j_df, label_col, feature_cols),
+         "none" = j_df, # don't impute this variable
+         "Invalid method"  # Default case
+      )
+      #Use the result to do something to the original dataset
+      print(result)
     } #end of var_j loop
 
   } #end of k loop
   # The sampler has finish his iterative work, can now return the imputed dataset ?
-  return(imp_init)
+  return(result)
 }
 
 
-# Spark version of make.where
-make.where.spark <- function(data, keyword = c("missing", "all", "none", "observed")) {
-  keyword <- match.arg(keyword)
+library(sparklyr)
+library(dplyr)
 
-  data <- check.spark.dataform(data)
-  where <- switch(keyword,
-                  missing = na_locations(data),
-                  all = data %>% mutate(across(everything(), ~ TRUE)),
-                  none = data %>% mutate(across(everything(), ~ FALSE)),
-                  observed = data %>% mutate(across(everything(), ~ !is.na(.)))
-  )
-  where
+
+conf <- spark_config()
+conf$`sparklyr.shell.driver-memory`<- "128G"
+conf$spark.memory.fraction <- 0.6
+conf$`sparklyr.cores.local` <- 24
+
+sc = spark_connect(master = "local", config = conf)
+
+path_DORS =     "/vault/hugmo418_amed/NDR-SESAR/Uttag Socialstyrelsen 2024/ut_r_par_ov_63851_2023.csv"
+path_NDR =      "/vault/hugmo418_amed/NDR-SESAR/Uttag SCB+NDR+SESAR 2024/FI_Lev_NDR.csv"
+path_SESAR_FU = "/vault/hugmo418_amed/NDR-SESAR/Uttag SCB+NDR+SESAR 2024/FI_Lev_SESAR_FU.csv"
+path_SESAR_IV = "/vault/hugmo418_amed/NDR-SESAR/Uttag SCB+NDR+SESAR 2024/FI_Lev_SESAR_IV.csv"
+path_SESAR_TS = "/vault/hugmo418_amed/NDR-SESAR/Uttag SCB+NDR+SESAR 2024/FI_Lev_SESAR_TS.csv"
+path_small_SESAR_IV = "/vault/hugmo418_amed/subsets_thesis_hugo/small_IV.csv"
+
+data_small <- spark_read_csv(sc, name="df", path=path_small_SESAR_IV, infer_schema=TRUE, null_value='NA')
+#data_small <- spark_read_csv(sc, name = "df",path = path_SESAR_FU,infer_schema = TRUE, null_value = 'NA')
+
+# In FU, lopNr and SenPNr contain missing values, so i remove those columns for simplicity
+data_small <- data_small %>%
+  select(-c("LopNr","IV_SenPNr")) %>%
+  select(sort(colnames(.))) %>% # Order alphabetically
+  mutate(IV_AtrialFibrillation = as.logical(IV_AtrialFibrillation)) %>%
+  mutate(IV_CerebrovascDisease = as.logical(IV_CerebrovascDisease)) %>%
+  mutate(IV_CopdAsthma = as.logical(IV_CopdAsthma)) %>%
+  mutate(IV_CoronaryHeartDisease = as.logical(IV_CoronaryHeartDisease)) %>%
+  mutate(IV_Depression = as.logical(IV_Depression)) %>%
+  mutate(IV_Diabetes = as.logical(IV_Diabetes)) %>%
+  mutate(IV_HeartFailure = as.logical(IV_HeartFailure)) %>%
+  mutate(IV_Hypertension = as.logical(IV_Hypertension))
+
+
+
+dataset_info_IV = "Datasets info - Sesar_IV.csv"
+data_info <- read.csv(dataset_info_IV)
+
+get_named_vector <- function(csv_file) {
+  data <- read.csv(csv_file, stringsAsFactors = FALSE)
+  named_vector <- setNames(data$Variable.type, data$Variable.Name)
+  names(named_vector)[names(named_vector) == "Age"] <- "IV_Age"
+  ordered_vector <- named_vector[order(names(named_vector))] #Order alphabet.
+  return(ordered_vector)
 }
 
+variable_types <- get_named_vector(dataset_info_IV)
+print(variable_types)
+variable_types <- variable_types[!(names(variable_types) %in% c("LopNr", "SenPNr"))]
+
+colnames(data_small)
 
 
-# Spark version of check.where
-check.where.spark <- function(where, data) {
-  if (is.null(where)) {
-    # print("**DEBUG** where is null")
-    where <- make.where.spark(data, keyword = "missing")
-  }
+init_dict <- c("Binary" = "mode",
+               "Nominal" = "mode",
+               "Ordinal" = "mode",
+               "Code (don't impute)" = "none", # LopNr, Unit_code etc...
+               "Continuous_int" = "median",
+               "Continuous_float" = "mean",
+               "smalldatetime" = "none",
+               "String" = "none", #TBD
+               "Count" = "median", #TBD
+               "Semi-continuous" = "none", #TBD
+               "Else", "none")
 
-  if (!inherits(where, "tbl_spark")) {
-    if (is.character(where)) {
-      return(make.where.spark(data, keyword = where))
-    } else {
-      stop("Argument `where` not a Spark DataFrame", call. = FALSE)
-    }
-  }
-  # Num rows of a spark data frame is unknown until pulled, so dim(X) returns (NA, n_cols)
-  # Thus n_rows needs to be calculated separately
-  n_rows_where = where %>% dplyr::count() %>% dplyr::pull()
-  # print("**DEBUG** n_rows_where:")
-  # print(n_rows_where)
-  n_rows_data = data %>% dplyr::count() %>% dplyr::pull()
-  # print("**DEBUG** n_rows_data:")
-  # print(n_rows_data)
-  if ((dim(data)[2] != dim(where)[2]) || (n_rows_where != n_rows_data)) {
-    stop("Arguments `data` and `where` not of same size", call. = FALSE)
-  }
+impute_modes <- replace(variable_types, variable_types %in% names(init_dict), init_dict[variable_types])
 
-  #where <- as.logical(as.matrix(where)) #Not needed ?
-  if (is.na.spark(where)) { #from NA_utils.R
-    stop("Argument `where` contains missing values", call. = FALSE)
-  }
+imput_init <- impute_with_MeMoMe(sc, data_small, impute_mode = impute_modes)
 
-  where
-}
-
-
-get_var_types <- function(data, var_names) {
-  # Initialize an empty vector to store variable types
-  # TODO: Make this function better. right now it make bad guesses
-  types <- character(length(var_names))
-  names(types) <- var_names
-
-  schema <- sdf_schema(data)
-  schema_types <- setNames(sapply(schema, `[[`, "type"), sapply(schema, `[[`, "name"))
-  # Loop through each variable in the schema
-  for (var_name in var_names) {
-
-    # Extract the type information
-    var_type <- schema_types[[var_name]]
-
-    # Categorize based on Spark types
-    if (grepl("BooleanType", var_type)) {
-      types[var_name] <- "Binary"
-
-    } else if (grepl("ByteType|ShortType|IntegerType|LongType", var_type)) {
-      types[var_name] <- "Numerical"
-
-    } else if (grepl("FloatType|DoubleType|DecimalType", var_type)) {
-      types[var_name] <- "Numerical"
-
-    } else if (grepl("StringType|CharType|VarcharType", var_type)) {
-      types[var_name] <- "Categorical"
-
-    } else  {
-      types[var_name] <- "Unsupported"
-    }
-
-    if (grepl("Type", var_name)) {
-      #if "Type" in the var name, set type to categorical (for sesar datasets)
-      types[var_name] <- "Categorical"
-    }
-  }
-
-  return(types)
-}
-# tests for get_var_types
-# var_names <- sparklyr::sdf_schema(dummy_data)
-# var_types <- get_var_types(dummy_data, var_names)
-# print(var_types)
-
-
-
-impute_with_random_samples <- function(sc, sdf, columns = NULL) {
-  # Given a spark connection sc, a spark dataframe sdf and optional column names
-  # return a spark dataframe where missing values are replaced with random samples
-  # from the observed values.
-
-  # If columns not specified, use all columns
-  if (is.null(columns)) {
-    columns <- colnames(sdf)
-  }
-
-  # Process each column
-  for (col_name in columns) {
-    cat(col_name, " - ")
-    # Create a temporary view of the dataframe
-    sdf %>% sparklyr::spark_dataframe() %>%
-      invoke("createOrReplaceTempView", paste0("temp_", col_name))
-
-    # Get the column data type
-    col_type <- sdf %>%
-      sparklyr::sdf_schema() %>%
-      purrr::keep(~ .x$name == col_name) %>%
-      purrr::pluck(1, "type")
-
-    # SQL query to collect non-null values for sampling
-    sample_values_query <- paste0(
-      "SELECT ", col_name, " FROM temp_", col_name,
-      " WHERE ", col_name, " IS NOT NULL"
-    )
-
-    # Get distinct values for sampling
-    sample_values <- DBI::dbGetQuery(sc, sample_values_query)
-
-    # If there are no non-null values, skip this column
-    if (nrow(sample_values) == 0) {
-      warning(paste0("Column '", col_name, "' has no non-null values. Skipping."))
-      next
-    }
-
-    # Create a temporary table with the sample values
-    sdf_sample <- sparklyr::copy_to(
-      sc,
-      sample_values,
-      paste0("sample_", col_name),
-      overwrite = TRUE
-    )
-
-    # SQL to replace nulls with random samples
-    # We use the rand() function to randomly select values
-    random_sample_sql <- paste0(
-      "SELECT a.*, ",
-      "CASE WHEN a.", col_name, " IS NULL ",
-      "THEN b.", col_name, " ",
-      "ELSE a.", col_name, " END AS ", col_name, "_imputed ",
-      "FROM temp_", col_name, " a ",
-      "CROSS JOIN (SELECT * FROM sample_", col_name,
-      " ORDER BY rand() LIMIT 1) b"
-    )
-
-    # Apply the imputation
-    sdf <- DBI::dbGetQuery(sc, random_sample_sql) %>%
-      sparklyr::copy_to(sc, ., "temp_result", overwrite = TRUE) %>%
-      dplyr::select(-!!rlang::sym(col_name)) %>%
-      dplyr::rename(!!rlang::sym(col_name) := !!rlang::sym(paste0(col_name, "_imputed")))
-
-    # Clean up temporary views
-    DBI::dbExecute(sc, paste0("DROP VIEW IF EXISTS temp_", col_name))
-    sparklyr::tbl_uncache(sc, paste0("sample_", tolower(col_name)))
-  }
-
-  return(sdf)
-}
-
+imputed_results = mice.spark(data_small,
+                             sc,
+                             variable_types,
+                             m = 2,
+                             imp_init = imput_init)
