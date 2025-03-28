@@ -30,9 +30,18 @@ impute_with_mult_logistic_regression <- function(sc, sdf, target_col, feature_co
     model <- complete_data %>%
       ml_logistic_regression(formula = formula_obj)
 
+
     # Step 5: Predict missing values
     predictions <- ml_predict(model, incomplete_data)
+    print(colnames(predictions))
 
+    # removing unused created columns (only need prediction)
+    pre_pred_cols <- c(colnames(incomplete_data),"prediction")
+    post_pred_cols <- colnames(predictions)
+    extra_cols <- setdiff(post_pred_cols, pre_pred_cols)
+    predictions <- predictions %>% select(-all_of(extra_cols))
+
+    print(colnames(predictions))
     print(predictions %>% select(prediction))
 
     # Replace the NULL values with predictions

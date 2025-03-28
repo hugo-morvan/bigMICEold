@@ -1,4 +1,3 @@
-
 mice.spark <- function(data,
                        sc,
                        variable_types, # Used for initialization and method selection
@@ -184,7 +183,7 @@ sampler.spark <- function(sc,
          "Invalid method"  # Default case
       )
       #Use the result to do something to the original dataset
-      print(result)
+      #print(result)
     } #end of var_j loop
 
   } #end of k loop
@@ -218,15 +217,20 @@ data_small <- spark_read_csv(sc, name="df", path=path_small_SESAR_IV, infer_sche
 data_small <- data_small %>%
   select(-c("LopNr","IV_SenPNr")) %>%
   select(sort(colnames(.))) %>% # Order alphabetically
-  mutate(IV_AtrialFibrillation = as.logical(IV_AtrialFibrillation)) %>%
-  mutate(IV_CerebrovascDisease = as.logical(IV_CerebrovascDisease)) %>%
-  mutate(IV_CopdAsthma = as.logical(IV_CopdAsthma)) %>%
-  mutate(IV_CoronaryHeartDisease = as.logical(IV_CoronaryHeartDisease)) %>%
-  mutate(IV_Depression = as.logical(IV_Depression)) %>%
-  mutate(IV_Diabetes = as.logical(IV_Diabetes)) %>%
-  mutate(IV_HeartFailure = as.logical(IV_HeartFailure)) %>%
-  mutate(IV_Hypertension = as.logical(IV_Hypertension))
-
+  mutate(IV_AtrialFibrillation2 = as.numeric(IV_AtrialFibrillation2)) %>%
+  mutate(IV_CerebrovascDisease2 = as.numeric(IV_CerebrovascDisease2)) %>%
+  mutate(IV_CopdAsthma2 = as.numeric(IV_CopdAsthma2)) %>%
+  mutate(IV_CoronaryHeartDisease2 = as.numeric(IV_CoronaryHeartDisease2)) %>%
+  mutate(IV_Depression2 = as.numeric(IV_Depression2)) %>%
+  mutate(IV_Diabetes2 = as.numeric(IV_Diabetes2)) %>%
+  mutate(IV_HeartFailure2 = as.numeric(IV_HeartFailure2)) %>%
+  mutate(IV_Hypertension2 = as.numeric(IV_Hypertension2)) %>%
+  mutate(IV_TherapyCPAPX = as.numeric(IV_TherapyCPAPX)) %>%
+  mutate(IV_TherapyBilevelPAPX = as.numeric(IV_TherapyBilevelPAPX)) %>%
+  mutate(IV_TherapySplintX = as.numeric(IV_TherapySplintX)) %>%
+  mutate(IV_TherapySurgeryX = as.numeric(IV_TherapySurgeryX))%>%
+  mutate(IV_TherapyWeightX = as.numeric(IV_TherapyWeightX))%>%
+  mutate(IV_PositionTherapyX = as.numeric(IV_PositionTherapyX))
 
 
 dataset_info_IV = "Datasets info - Sesar_IV.csv"
@@ -268,3 +272,5 @@ imputed_results = mice.spark(data_small,
                              variable_types,
                              m = 2,
                              imp_init = imput_init)
+
+#spark_disconnect(sc)

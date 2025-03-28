@@ -35,13 +35,17 @@ impute_with_logistic_regression <- function(sc, sdf, target_col, feature_cols) {
 
     # Step 5: Predict missing values
     predictions <- ml_predict(model, incomplete_data)
-    # print(complete_data %>% select(target_col))
-    # print(predictions %>% select(prediction))
+
+    # removing unused created columns (only need prediction)
+    pre_pred_cols <- c(colnames(incomplete_data),"prediction")
+    post_pred_cols <- colnames(predictions)
+    extra_cols <- setdiff(post_pred_cols, pre_pred_cols)
+    predictions <- predictions %>% select(-all_of(extra_cols))
 
     # Replace the NULL values with predictions
     incomplete_data <- predictions %>%
         dplyr::select(-!!rlang::sym(target_col)) %>%  # Remove the original NULL column
-        dplyr::mutate(prediction = as.logical(prediction)) %>%
+        # dplyr::mutate(prediction = as.logical(prediction)) %>%
         dplyr::rename(!!rlang::sym(target_col) := prediction)  # Rename prediction to target_col
 
     # Step 6: Combine complete and imputed data
@@ -105,7 +109,7 @@ features_col <- features_col[sapply(cols[features_col],
 
 #Call the imputer
 
-imputed_missing <- impute_with_logistic_regression_V2(sc, df_missing, label_col, features_col)
+imputed_missing <- impute_with_logistic_regression(sc, df_missing, label_col, features_col)
 
 imputed_missing %>% select(label_col)
 
