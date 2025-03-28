@@ -41,9 +41,6 @@ impute_with_mult_logistic_regression <- function(sc, sdf, target_col, feature_co
     extra_cols <- setdiff(post_pred_cols, pre_pred_cols)
     predictions <- predictions %>% select(-all_of(extra_cols))
 
-    print(colnames(predictions))
-    print(predictions %>% select(prediction))
-
     # Replace the NULL values with predictions
     incomplete_data <- predictions %>%
       dplyr::select(-!!rlang::sym(target_col)) %>%  # Remove the original NULL column

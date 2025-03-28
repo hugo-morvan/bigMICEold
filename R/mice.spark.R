@@ -148,12 +148,15 @@ sampler.spark <- function(sc,
   names(imp_methods) <- var_names
   print(imp_methods)
   result <- imp_init # Is this a valid copy ?
+  num_vars <- length(var_names)
 
   for (k in from:to){
     cat("\n iteration: ", k)
     # For each variable j in the data
+    j <- 0
     for (var_j in var_names){
-      cat("\nImputing variable", var_j,". ")
+      j <- j+1
+      cat("\n",j,"/",num_vars,"Imputing variable", var_j," using method ")
       # Obtain the variables use to predict the missing values of variable j and create feature column
       label_col <- var_j
 
@@ -170,9 +173,7 @@ sampler.spark <- function(sc,
 
 
       method <- imp_methods[[var_j]]
-      print("**DEBUG**: method selected")
-      print(method)
-      print(label_col)
+      cat(method)
 
       result <- switch(method,
          "Logistic" = impute_with_logistic_regression(sc, j_df, label_col, feature_cols),
@@ -184,6 +185,9 @@ sampler.spark <- function(sc,
       )
       #Use the result to do something to the original dataset
       #print(result)
+      # To avoid stacjoverflow error, break the lineage after each imputation
+      # Might not be necessary at every iteration. only run into error after ~25 imputation
+      result %>% sdf_persist()
     } #end of var_j loop
 
   } #end of k loop
@@ -212,6 +216,7 @@ path_small_SESAR_IV = "/vault/hugmo418_amed/subsets_thesis_hugo/small_IV.csv"
 
 data_small <- spark_read_csv(sc, name="df", path=path_small_SESAR_IV, infer_schema=TRUE, null_value='NA')
 #data_small <- spark_read_csv(sc, name = "df",path = path_SESAR_FU,infer_schema = TRUE, null_value = 'NA')
+
 
 # In FU, lopNr and SenPNr contain missing values, so i remove those columns for simplicity
 data_small <- data_small %>%
@@ -265,7 +270,11 @@ init_dict <- c("Binary" = "mode",
 
 impute_modes <- replace(variable_types, variable_types %in% names(init_dict), init_dict[variable_types])
 
+data_small %>% sdf_persist(name = "data")
+
 imput_init <- impute_with_MeMoMe(sc, data_small, impute_mode = impute_modes)
+
+imput_init %>% sdf_persist()
 
 imputed_results = mice.spark(data_small,
                              sc,
