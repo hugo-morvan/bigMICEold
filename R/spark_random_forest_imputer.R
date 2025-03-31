@@ -1,6 +1,6 @@
 impute_with_random_forest_regressor <- function(sc, sdf, target_col, feature_cols) {
     # Random forest regressor using sparklyr ml_random_forest Good for continuous values
-    # Doc: https://rdrr.io/cran/sparklyr/man/ml_random_forest.html (sparklyr website doc sucks)
+    # Doc: https://rdrr.io/cran/sparklyr/man/ml_random_forest.html
 
     #TODO: Added more flexibility for the user to use hyperparameters of the model (see doc)
     # Maybe add that as a ... param to the function
@@ -53,7 +53,7 @@ impute_with_random_forest_regressor <- function(sc, sdf, target_col, feature_col
 
 impute_with_random_forest_classifier <- function(sc, sdf, target_col, feature_cols) {
   # Random forest imputer using sparklyr ml_random_forest Good for categorical values
-  # Doc: https://rdrr.io/cran/sparklyr/man/ml_random_forest.html (sparklyr website doc sucks)
+  # Doc: https://rdrr.io/cran/sparklyr/man/ml_random_forest.html
 
   if (!is.character(target_col) || length(target_col) != 1) {
     stop("target_col must be a single column name as a character string")

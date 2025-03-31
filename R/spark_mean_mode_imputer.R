@@ -114,6 +114,7 @@ impute_with_MeMoMe  <- function(sc, sdf, column = NULL, impute_mode) {
 
   return(result)
 }
+
 impute_modes <- setNames(rep("mode", length(colnames(data_small))), colnames(data_small))
 impute_modes[c("LopNr","IV_SenPNr","IV_Height", "IV_Weight", "IV_BMI_Calculated","IV_BMI_UserSubmitted" )] <-
               c("none","none",  "median",    "median",    "mean",              "mean")
