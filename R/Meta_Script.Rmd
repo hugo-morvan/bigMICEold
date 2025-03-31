@@ -281,7 +281,6 @@ calculate_imputation_stat <- function(imputed_data, variable) {
   imputation_groups <- imputation_groups[-1] # Remove the incomplete dataset
 
   pooled_mean <- mean(imputed_data[[variable]], na.rm = TRUE)
-  #mean of the standard error squared.
 
   within_var <- mean(sapply(imputation_groups, function(imp) { # TODO: make this a separate function?
     mean((imp[[variable]] - mean(imp[[variable]]))^2, na.rm = TRUE)

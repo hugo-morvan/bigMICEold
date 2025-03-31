@@ -474,8 +474,19 @@ mice.spark <- function(data,
   cat("Initalisation time:", init_elapsed)
   # TODO : Add elapse time to the result dataframe (and create result dataframe)
 
-  # initialize return object (?) :
-  imputation_results = c()
+  ### Rubin Rules Stats INIT###
+  # initialize list to store statistics for each variable
+  var_stats = list()
+  for(var in cols){
+    var_stats[[var]] <- list(
+      means = numeric(m),
+      variances = numeric(m)
+    )
+  }
+  #list to store per-imputation information
+  imputation_stats <- vector("list", m)
+  #############################
+
 
   # FOR EACH IMPUTATION SET i = 1, ..., m
   for (i in 1:m) {
@@ -495,16 +506,84 @@ mice.spark <- function(data,
 
     imp_end_time <- proc.time()
     imp_elapsed <- (imp_end_time-imp_start_time)['elapsed']
-    cat("Imputation time:", imp_elapsed)
+    cat("\nImputation time:", imp_elapsed,".\n")
 
-    # Save imputation to dataframe ?
-    # imputation_results = rbind(imputation_results, imp)
+    # Save imputation to dataframe ? Maybe only the last one ?
 
-    # Calculate Rubin Rules statistics
-    # TODO
+    # Compute user-provided analysis on the fly on the imputed data ?
+
+    # ##### Calculate Rubin Rules statistics ############
+    # Build expressions for Spark SQL aggregations
+    agg_exprs <- list()
+
+    for (var in cols) {
+
+      var_sym <- rlang::sym(var)
+      # Use proper Spark SQL functions for mean and variance
+      agg_exprs[[paste0(var, "_mean")]] <- expr(mean(!!var_sym, na.rm = TRUE))
+      agg_exprs[[paste0(var, "_var")]] <- expr(variance(!!var_sym, na.rm = TRUE))
+    }
+
+
+    # Execute the Spark SQL aggregation with all variables
+    stats <- imp %>%
+      summarize(!!!agg_exprs) %>%
+      collect()
+
+    # Create per-imputation summary for this iteration
+    imp_summary <- list(
+      imputation_number = i,
+      imputation_time = imp_elapsed
+    )
+
+    # Store the statistics for each variable
+    for (var in cols) {
+      var_stats[[var]]$means[i] <- stats[[paste0(var, "_mean")]]
+      var_stats[[var]]$variances[i] <- stats[[paste0(var, "_var")]]
+
+      # Also add to per-imputation summary
+      imp_summary[[paste0(var, "_mean")]] <- stats[[paste0(var, "_mean")]]
+      imp_summary[[paste0(var, "_var")]] <- stats[[paste0(var, "_var")]]
+    }
+
+    # Save this imputation's stats
+    imputation_stats[[i]] <- imp_summary
+
+  } # END FOR EACH IMPUTATION SET i = 1, ..., m
+
+  # Rubin's Statistics
+  results <- list()
+
+  for (var in cols) {
+    means <- var_stats[[var]]$means
+    variances <- var_stats[[var]]$variances
+
+    pooled_mean <- mean(means, na.rm = TRUE)
+    within_var <- mean(variances, na.rm = TRUE)
+    between_var <- sum((means - pooled_mean)^2) / (m - 1)
+    total_var <- within_var + between_var + (between_var / m)
+
+    results[[var]] <- list(
+      pooled_mean = pooled_mean,
+      within_var = within_var,
+      between_var = between_var,
+      total_var = total_var,
+      means = means,
+      variances = variances
+    )
   }
 
-  return(imputation_results)
+  # data frame for per-imputation statistics
+  per_imputation_df <- do.call(rbind, lapply(imputation_stats, function(imp) {
+    data.frame(imp, stringsAsFactors = FALSE)
+  }))
+
+  # Returning both the aggregated results and per-imputation statistics
+  return(list(
+    rubin_stats = results,
+    per_imputation = per_imputation_df,
+    imputation_stats = imputation_stats
+  ))
 }
 
 sampler.spark <- function(sc,
@@ -609,13 +688,15 @@ path_SESAR_IV = "/vault/hugmo418_amed/NDR-SESAR/Uttag SCB+NDR+SESAR 2024/FI_Lev_
 path_SESAR_TS = "/vault/hugmo418_amed/NDR-SESAR/Uttag SCB+NDR+SESAR 2024/FI_Lev_SESAR_TS.csv"
 path_small_SESAR_IV = "/vault/hugmo418_amed/subsets_thesis_hugo/small_IV.csv"
 
-data_small <- spark_read_csv(sc, name="df", path=path_small_SESAR_IV, infer_schema=TRUE, null_value='NA')
+data_small <- spark_read_csv(sc, name="df", path=path_SESAR_IV, infer_schema=TRUE, null_value='NA')
 #data_small <- spark_read_csv(sc, name = "df",path = path_SESAR_FU,infer_schema = TRUE, null_value = 'NA')
 
 
-# In FU, lopNr and SenPNr contain missing values, so i remove those columns for simplicity
+# In  lopNr and SenPNr contain missing values, so i remove those columns for simplicity
+# I also convert the boolean binary variable into 0/1 binaries format.
+# This allows for more flexibility in the model selection
 data_small <- data_small %>%
-  select(-c("LopNr","IV_SenPNr")) %>%
+  select(-c("LopNr","SenPNr")) %>%
   select(sort(colnames(.))) %>% # Order alphabetically
   mutate(IV_AtrialFibrillation2 = as.numeric(IV_AtrialFibrillation2)) %>%
   mutate(IV_CerebrovascDisease2 = as.numeric(IV_CerebrovascDisease2)) %>%
@@ -668,14 +749,15 @@ impute_modes <- replace(variable_types, variable_types %in% names(init_dict), in
 
 data_small %>% sdf_persist(name = "data")
 
-imput_init <- impute_with_MeMoMe(sc, data_small, impute_mode = impute_modes)
+#imput_init <- impute_with_MeMoMe(sc, data_small, impute_mode = impute_modes)
 
-imput_init %>% sdf_persist()
+#imput_init %>% sdf_persist()
 
 imputed_results = mice.spark(data_small,
                              sc,
                              variable_types,
                              m = 2,
-                             imp_init = imput_init)
+                             maxit = 2)
 
+#spark_session(sc) %>% invoke("catalog") %>% invoke("clearCache")
 #spark_disconnect(sc)
