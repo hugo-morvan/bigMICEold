@@ -396,6 +396,7 @@ impute_with_random_forest_classifier <- function(sc, sdf, target_col, feature_co
 mice.spark <- function(data,
                        sc,
                        variable_types, # Used for initialization and method selection
+                       analysis_formula,
                        m = 5,
                        method = NULL,
                        predictorMatrix = NULL,
@@ -403,7 +404,7 @@ mice.spark <- function(data,
                        where = NULL,
                        blocks = NULL,
                        visitSequence = NULL,
-                       formulas,
+                       formulas = NULL,
                        modeltype = NULL,
                        blots = NULL,
                        post = NULL,
@@ -475,15 +476,13 @@ mice.spark <- function(data,
   # TODO : Add elapse time to the result dataframe (and create result dataframe)
 
   ### Rubin Rules Stats INIT###
-  # initialize list to store statistics for each variable
-  var_stats = list()
-  for(var in cols){
-    var_stats[[var]] <- list(
-      means = numeric(m),
-      variances = numeric(m)
-    )
-  }
-  #list to store per-imputation information
+  # Get the formula for the model
+  formula_obj <- analysis_formula
+  param_names <- c("(Intercept)", all.vars(formula_obj)[-1])
+
+  model_params <- vector("list", m)
+
+  # List to store per-imputation information
   imputation_stats <- vector("list", m)
   #############################
 
@@ -513,37 +512,28 @@ mice.spark <- function(data,
     # Compute user-provided analysis on the fly on the imputed data ?
 
     # ##### Calculate Rubin Rules statistics ############
-    # Build expressions for Spark SQL aggregations
-    agg_exprs <- list()
+    # Fit model on imputed data
+    cat("Fitting model on imputed data\n")
+    model <- imp %>%
+      ml_logistic_regression(formula = formula_obj)
 
-    for (var in cols) {
-
-      var_sym <- rlang::sym(var)
-      # Use proper Spark SQL functions for mean and variance
-      agg_exprs[[paste0(var, "_mean")]] <- expr(mean(!!var_sym, na.rm = TRUE))
-      agg_exprs[[paste0(var, "_var")]] <- expr(variance(!!var_sym, na.rm = TRUE))
-    }
-
-
-    # Execute the Spark SQL aggregation with all variables
-    stats <- imp %>%
-      summarize(!!!agg_exprs) %>%
-      collect()
-
+    # Store model coefficients
+    model_params[[i]] <- model$coefficients
+    print(model$coefficients)
     # Create per-imputation summary for this iteration
     imp_summary <- list(
       imputation_number = i,
       imputation_time = imp_elapsed
     )
 
-    # Store the statistics for each variable
-    for (var in cols) {
-      var_stats[[var]]$means[i] <- stats[[paste0(var, "_mean")]]
-      var_stats[[var]]$variances[i] <- stats[[paste0(var, "_var")]]
-
-      # Also add to per-imputation summary
-      imp_summary[[paste0(var, "_mean")]] <- stats[[paste0(var, "_mean")]]
-      imp_summary[[paste0(var, "_var")]] <- stats[[paste0(var, "_var")]]
+    # Add model coefficients to the imputation summary
+    for (param in param_names) {
+      if (param %in% names(model$coefficients)) {
+        imp_summary[[param]] <- model$coefficients[[param]]
+      } else {
+        # Handle case where parameter might not be in the model
+        imp_summary[[param]] <- NA
+      }
     }
 
     # Save this imputation's stats
@@ -551,26 +541,35 @@ mice.spark <- function(data,
 
   } # END FOR EACH IMPUTATION SET i = 1, ..., m
 
-  # Rubin's Statistics
+  # Rubin's Statistics for model parameters
   results <- list()
 
-  for (var in cols) {
-    means <- var_stats[[var]]$means
-    variances <- var_stats[[var]]$variances
+  # Create a matrix of parameters from all imputations
+  params_matrix <- do.call(rbind, model_params)
 
-    pooled_mean <- mean(means, na.rm = TRUE)
-    within_var <- mean(variances, na.rm = TRUE)
-    between_var <- sum((means - pooled_mean)^2) / (m - 1)
-    total_var <- within_var + between_var + (between_var / m)
+  for (param in param_names) {
+    if (param %in% colnames(params_matrix)) {
+      param_values <- params_matrix[, param]
 
-    results[[var]] <- list(
-      pooled_mean = pooled_mean,
-      within_var = within_var,
-      between_var = between_var,
-      total_var = total_var,
-      means = means,
-      variances = variances
-    )
+      # Calculate Rubin's statistics
+      pooled_param <- mean(param_values, na.rm = TRUE)
+      between_var <- sum((param_values - pooled_param)^2) / (m - 1)
+
+      # For model parameters, within variance needs to be estimated from model
+      # Here we'll use a simplified approach - using the variance of the estimates
+      # In a more complete implementation, this would come from the model's variance-covariance matrix
+      within_var <- mean((param_values - pooled_param)^2) / m
+
+      total_var <- within_var + between_var + (between_var / m)
+
+      results[[param]] <- list(
+        pooled_param = pooled_param,
+        within_var = within_var,
+        between_var = between_var,
+        total_var = total_var,
+        values = param_values
+      )
+    }
   }
 
   # data frame for per-imputation statistics
@@ -582,7 +581,8 @@ mice.spark <- function(data,
   return(list(
     rubin_stats = results,
     per_imputation = per_imputation_df,
-    imputation_stats = imputation_stats
+    imputation_stats = imputation_stats,
+    model_params = model_params
   ))
 }
 
@@ -688,7 +688,7 @@ path_SESAR_IV = "/vault/hugmo418_amed/NDR-SESAR/Uttag SCB+NDR+SESAR 2024/FI_Lev_
 path_SESAR_TS = "/vault/hugmo418_amed/NDR-SESAR/Uttag SCB+NDR+SESAR 2024/FI_Lev_SESAR_TS.csv"
 path_small_SESAR_IV = "/vault/hugmo418_amed/subsets_thesis_hugo/small_IV.csv"
 
-data_small <- spark_read_csv(sc, name="df", path=path_SESAR_IV, infer_schema=TRUE, null_value='NA')
+data_small <- spark_read_csv(sc, name="df", path=path_small_SESAR_IV, infer_schema=TRUE, null_value='NA')
 #data_small <- spark_read_csv(sc, name = "df",path = path_SESAR_FU,infer_schema = TRUE, null_value = 'NA')
 
 
@@ -696,7 +696,7 @@ data_small <- spark_read_csv(sc, name="df", path=path_SESAR_IV, infer_schema=TRU
 # I also convert the boolean binary variable into 0/1 binaries format.
 # This allows for more flexibility in the model selection
 data_small <- data_small %>%
-  select(-c("LopNr","SenPNr")) %>%
+  select(-c("LopNr","IV_SenPNr")) %>%
   select(sort(colnames(.))) %>% # Order alphabetically
   mutate(IV_AtrialFibrillation2 = as.numeric(IV_AtrialFibrillation2)) %>%
   mutate(IV_CerebrovascDisease2 = as.numeric(IV_CerebrovascDisease2)) %>%
@@ -747,17 +747,45 @@ init_dict <- c("Binary" = "mode",
 
 impute_modes <- replace(variable_types, variable_types %in% names(init_dict), init_dict[variable_types])
 
-data_small %>% sdf_persist(name = "data")
+#data_small %>% sdf_persist(name = "data")
 
-#imput_init <- impute_with_MeMoMe(sc, data_small, impute_mode = impute_modes)
+imput_init <- impute_with_MeMoMe(sc, data_small, impute_mode = impute_modes)
 
 #imput_init %>% sdf_persist()
+
+# Example analysis: CoronaryDisease2 ~ BMI + Age on full cases only
+
+example_data <- data_small %>%
+  select(c("IV_CoronaryHeartDisease2","IV_Age","IV_BMI_Calculated")) %>%
+  na.omit()
+
+print(sdf_nrow(example_data))
+
+formula_obj <- as.formula("IV_CoronaryHeartDisease2 ~ IV_Age + IV_BMI_Calculated")
+model_ex <- example_data %>%
+  ml_logistic_regression(formula = formula_obj)
+
+print(model_ex$coefficients)
+print(model_ex$response)
+print(model_ex$summary) # same as ml_summary(model_ex)
+print(model_ex$summary$accuracy())
+print(model_ex$summary$area_under_roc())
+names(model_ex$coefficients)
+
+
 
 imputed_results = mice.spark(data_small,
                              sc,
                              variable_types,
+                             analysis_formula = formula_obj,
                              m = 2,
                              maxit = 2)
+
+
+imputed_results$imputation_stats
+imputed_results$model_params
+imputed_results$rubin_stats
+model_ex$coefficients
 
 #spark_session(sc) %>% invoke("catalog") %>% invoke("clearCache")
 #spark_disconnect(sc)
