@@ -1,7 +1,11 @@
 ---
 title: "SESAR_IV Experiments"
+author: "Hugo Morvan"
+date: "`r Sys.Date()`"
 output: html_document
-date: Sys.Date()
+  toc: true
+  toc_depth: 3
+  toc_float: true
 ---
 
 ## Libraries import
@@ -184,6 +188,10 @@ monitor_memory <- function(func, ...,
     plot = NULL#p
   ))
 }
+
+```
+
+```{r utils2}
 generate_subset <- function(data, subset_size, replace=FALSE) {
   n = nrow(data)
   sample_size <- round(n * subset_size)
@@ -191,9 +199,7 @@ generate_subset <- function(data, subset_size, replace=FALSE) {
   return(data[sampled_indices, ])
 }
 
-```
 
-```{r utils2}
 create_predictor_matrix <- function(df, save=FALSE){
   # Utility function to create a predictor matrix for bigMICE
   # takes a R dataframe and saves a excel file with the default predictor matrix

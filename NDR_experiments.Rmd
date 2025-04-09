@@ -1,0 +1,324 @@
+---
+title: "NDR Experiments"
+author: "Hugo Morvan"
+date: "`r Sys.Date()`"
+output: html_document
+  toc: true
+  toc_depth: 3
+  toc_float: true
+---
+
+## Libraries import
+
+```{r libraries}
+install_if_missing <- function(package_name) {
+  if (!require(package_name, character.only = TRUE)) {
+    options(repos = c(CRAN = "https://cloud.r-project.org"))
+    install.packages(package_name)
+    library(package_name, character.only = TRUE)
+  }
+}
+install_if_missing("devtools")
+library(devtools)
+install_if_missing("mice")
+library(mice)
+install_if_missing("sparklyr")
+library(sparklyr)
+install_if_missing("dplyr")
+library(dplyr)
+install_if_missing("profmem")
+library(profmem)
+install_if_missing("parallel")
+library(parallel)
+install_if_missing("dbplot")
+library(dbplot)
+install_if_missing("ggplot2")
+library(ggplot2)
+
+# Force reinstall to make sure latest version is used
+install_github("hugo-morvan/bigMice", force = TRUE)
+library(bigMice)
+```
+
+```{r utils2}
+generate_subset_spark <- function(sdf, subset_size, replace=FALSE) {
+  # Util function to generate a subset of the data. 
+  # If subset_size is a number between 0 and 1, it will sample that fraction of the data. 
+  # If subset_size is a number greater than 1, it will take that many rows.
+  
+  if (subset_size > 1){
+    # Select the first subset_size rows
+    sampled_sdf <- sdf %>% head(subset_size)
+  }
+  else if (subset_size < 1){
+    # Sample a subset of the data
+    sampled_sdf <- sdf %>% sdf_sample(fraction = subset_size, replacement = replace)
+  }
+  return(sampled_sdf)
+}
+
+```
+
+```{r data_paths}
+
+path_NDR = "/vault/hugmo418_amed/NDR-SESAR/Uttag SCB+NDR+SESAR 2024/FI_Lev_NDR.csv"
+path_info_NDR = "/home/hugmo418/Documents/CAMEO_code/Datasets info - NDR.csv"
+
+paths = c(path_info_NDR, path_NDR)
+
+for(p in paths){
+    cat(p)
+    if(!file.exists(p)){
+        stop(paste0("Missing file", p))
+    }else{
+        cat("\n found \n")
+    }
+}
+cat("Found all the files.\n")
+
+```
+
+## Connect to Spark backend
+
+```{r spark_connect}
+
+conf <- spark_config()
+conf$`sparklyr.shell.driver-memory`<- "256G"
+conf$spark.memory.fraction <- 0.7
+conf$`sparklyr.cores.local` <- 32
+
+sc = spark_connect(master = "local", config = conf)
+
+```
+
+## Run the experiment
+
+Create various subset sizes of the dataset.
+For each subset size, hide 10% to create known unknowns.
+First, run the mice baseline, then the bigMice method.
+
+```{r mice_procedure_def}
+mice_procedure <- function(data, m, analysis_formula){
+  
+  imp <- mice(data, print=F, seed=123, m=m)
+  fit <- with(imp, glm(analysis_formula, family=binomial(link='logit')))
+  est <- pool(fit)
+  
+  return(est)
+}
+
+
+```
+
+```{r spark_procedure_def}
+
+spark_procedure <- function(data, m, analysis_formula, variable_types, predictorMatrix){
+  
+  imputed_results <- bigMice::mice.spark(data = data,
+                                           sc = sc,
+                               variable_types = variable_types,
+                             analysis_formula = analysis_formula,
+                              predictorMatrix = predictorMatrix,
+                                            m = m)
+  
+  return(imputed_results)
+}
+
+```
+
+prep work for the spark procedure:
+
+```{r prep_spark}
+
+variable_types <- c( alder = "Continuous_int", 
+                   bmi = "Continuous_float",
+                   kolesterol = "Continuous_float",
+                   sex = "Nominal",
+                   klin_diab_typ = "Nominal")
+
+print(paste0("Variable types: ", impute_modes))
+
+impute_modes <- c( alder = "median", 
+                   bmi = "mean",
+                   kolesterol = "mean",
+                   sex = "mode",
+                   klin_diab_typ = "mode")
+
+print(paste0("Impute modes: ", impute_modes))
+
+preprocess_NDR <- function(sdf){
+    modified_sdf <- sdf
+    modified_sdf <- modified_sdf %>%
+  select(c("alder", "bmi", "kolesterol", "sex", "klin_diab_typ"))
+  return(modified_sdf)
+}
+
+predictorMatrix <- matrix(1, nrow = length(variable_types), ncol = length(variable_types))
+diag(predictorMatrix) <- 0
+rownames(predictorMatrix) <- names(variable_types)
+colnames(predictorMatrix) <- names(variable_types)
+print(predictorMatrix)
+
+```
+
+Show time:
+
+```{r experiment}
+# *** Experiment parameters ***
+n_runs = 1
+m = 5
+subset_sizes = c(1e2, 1e3, 1e4, 1e5, 1e6, 1e7) # 100 to 10M
+#subset_sizes = c(0.1, 0.2)#, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0)
+num_subsets <- length(subset_sizes)
+# Total iterations = num_subsets * n_runs * m * maxit (5) * 2 (mice and spark)...
+# Time per iteration is about 4min for IV (3.8) when using full predictors (default)
+# Runtime grows rapidly, need to choose the parameters wisely
+
+# Create the result dataframe for subset size vs runtime for both baseline and spark
+results_df <- data.frame(
+  sample_size = rep(subset_sizes, each = n_runs),
+  runtime_sec = NA,
+  parameters_estimated = NA,
+  method = rep(c("baseline", "spark"), each = num_subsets * n_runs)
+)
+
+
+analysis_formula <- as.formula("klin_diab_typ ~ alder + bmi + kolesterol + sex")
+
+# Load the data and create the spark dataframe for selected rows
+sdf_ndr <- spark_read_csv(sc, "NDR", path_NDR, header = TRUE, infer_schema = TRUE)
+
+for(subset_size in subset_sizes){
+    cat("\n---Subset size:", subset_size,"---\n")
+    # Create the spark dataframe
+    sdf <- generate_subset_spark(sdf = sdf_ndr, subset_size = subset_size)
+    sdf <- preprocess_NDR(sdf)
+    
+    # ********** BASELINE ***********
+    cat("\n---BASELINE---\n")
+    
+    # Create the baseline data if the subset is small enough
+    if(subset_size <= 1e5 & subset_size > 1){
+        data_baseline <- sdf %>% collect() %>% as.data.frame()
+    }else{ #Too big or is fraction used ?
+      if (subset_size < 1){ # fraction used
+        num_rows <- round(sdf_nrow(sdf) * subset_size)
+        cat("\nNumber of rows in the subset:", num_rows, "\n")
+        if (num_rows > 1e5){ # too big
+          cat("\nSubset size too large for baseline, skipping...\n")
+        }else{ # small enough
+          data_baseline <- sdf %>% collect() %>% as.data.frame()
+        }
+        
+      }else{ # too big
+        cat("\nSubset size too large for baseline, skipping...\n")
+      }
+      
+    }
+    
+    for(i in n_runs){
+      mice_start_time <- Sys.time()
+      cat("\n---Run:", i,"---\n")
+
+      res <- mice_procedure(data = data_baseline, 
+                            m = m, 
+                            analysis_formula = analysis_formula)
+      mice_end_time <- Sys.time()
+      mice_runtime <- as.numeric(difftime(mice_end_time, mice_start_time, units="secs"))
+      cat("\n Total Runtime:", mice_runtime)
+      
+      # Save the results
+      results_df$runtime_sec[results_df$sample_size == subset_size & results_df$method == "baseline"] <- mice_runtime
+      results_df$parameters_estimated[results_df$sample_size == subset_size & results_df$method == "baseline"] <- summary(res)
+      
+    } # END of baseline runs
+    
+    
+    # *********** SPARK *************
+    cat("\n---SPARK---\n")
+    
+    for(i in 1:n_runs){
+        cat("\n---Run:", i,"---\n")
+        start_time <- Sys.time()
+        res_spark <- spark_procedure(data = sdf, 
+                               m = m, 
+                               analysis_formula = analysis_formula, 
+                               variable_types = variable_types , 
+                               predictorMatrix = predictorMatrix)
+        
+        end_time <- Sys.time()
+        runtime <- as.numeric(difftime(end_time, start_time, units="secs"))
+        cat("\n Total Runtime:", runtime)
+        
+        # Save the results
+        results_df$runtime_sec[results_df$sample_size == subset_size & results_df$method == "spark"] <- runtime
+        results_df$parameters_estimated[results_df$sample_size == subset_size & results_df$method == "spark"] <- res_spark$rubin_stats
+        
+    } # END of spark runs
+    
+} # END of subset sizes loop
+```
+
+## Visualization of the results (needs works)
+
+```{r viz1}
+runtime_summary <- results_df %>%
+  group_by(sample_size) %>%
+  summarize(
+    mean_runtime = mean(runtime_sec),
+    variance_runtime = var(runtime_sec),  # Variance of runtime across n_runs repetitions
+    .groups = "drop"
+  )
+n <- nrow(data)
+ggplot(runtime_summary, aes(x = sample_size*n, y = mean_runtime)) +
+  geom_point(color = "blue", size = 3) +    # Mean runtime points
+  geom_errorbar(aes(ymin = mean_runtime - sqrt(variance_runtime), 
+                    ymax = mean_runtime + sqrt(variance_runtime)), 
+                width = 50, color = "red") + # Error bars using standard deviation
+  geom_line(color = "black") +              # Line to connect points
+  labs(title = "Mean Runtime vs Sample Size",
+       x = "Sample Size",
+       y = "Mean Runtime (seconds)") +
+  theme_minimal()
+```
+
+```{r viz2}
+imp_size_summary <- results_df %>%
+  group_by(sample_size) %>%
+  summarize(
+    mean_imputation_size = mean(imputation_obj_size),
+    variance_imputation_size = var(imputation_obj_size),
+    .groups = "drop"
+  )
+n <- nrow(data)
+ggplot(imp_size_summary, aes(x = sample_size*n, y = mean_imputation_size)) +
+  geom_point(color = "blue", size = 3) +
+  geom_line(color = "black") +
+  labs(title = "Mean Imputation size vs Sample Size (m=2)",
+       x = "Sample Size",
+       y = "Mean Imputation size (MB)") +
+  theme_minimal()
+```
+
+```{r viz3}
+max_mem_summary <- results_df %>%
+  group_by(sample_size) %>%
+  summarize(
+    max_memory_usage = max(max_memory_MB),
+    .groups = "drop"
+  )
+n <- nrow(data)
+ggplot(max_mem_summary, aes(x = sample_size*n, y = max_memory_usage)) +
+  geom_point(color = "blue", size = 3) +
+  geom_line(color = "black") +
+  labs(title = "Max memory Usage (MB) during imputation procedure (m=2) vs Sample Size ",
+       x = "Sample Size",
+       y = "Max memory usage (MB)") +
+  theme_minimal()
+```
+
+## Disconnect Spark
+
+```{r spark_disconnect}
+spark_disconnect(sc)
+```
